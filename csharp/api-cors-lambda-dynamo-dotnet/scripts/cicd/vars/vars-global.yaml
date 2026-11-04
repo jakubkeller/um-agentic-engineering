@@ -1,0 +1,74 @@
+# Global variables are available to all shell scripts as operating system environment variables.
+# These values are not specific to a development environment. If any of these differ by environment for your project, move them into the vars-[environment].yaml files.
+# See README.md for more information.
+
+parameters:
+- name: 'tpl_type'
+  type: string
+  default: ''
+
+variables:
+# Required
+- name: REGION_NAME
+  value: 'us-east-2'
+  readonly: true
+- name: AGENT_POOL
+  value: "aws-cdk"
+
+# Pin versions of tools.
+# See README.md in cicd folder for version specification details of each tool.
+# None of these values are required
+- name: NODE_VERSION
+  value: '22.14.0'
+- name: CDK_VERSION
+  value: '2.1005.0'
+- name: PYTHON_VERSION
+  value: ''
+- name: DOTNET_VERSION
+  value: '8.x'
+
+# Wiz CLI variables
+- name: WIZ_PROJECT_ID
+  value: '71ee5f26-d110-50a8-972d-cb6cc4fbbb8f'
+
+# Sonar Configuration Variables
+- name: SONAR_PROJECT_NAME
+  value: 'aws-devops-reference-csharp-example'
+- name: SONAR_PROJECT_KEY
+  value: 'com.navitus.devops.nucleus.csharp-example'
+- name: SONAR_ORG_NAME
+  value: 'navitus'
+# - name: SONAR_EXTRA_PROPERTIES
+#   value: See https://dev.azure.com/Navitus/NUCLEUS/_git/ado-pipeline-templates?path=%2Fsecurity%2FREADME-Sonar.md&_a=preview if you believe you need to set these.
+
+# Build and Destroy variables
+# Update these to reflect the structure of your repository
+- ${{ if or(eq(parameters.tpl_type, 'Build'), eq(parameters.tpl_type, 'Destroy')) }}:
+  - name: LOCAL_PATH
+    value: "$(Build.Repository.LocalPath)/pipeline-examples/csharp/api-cors-lambda-dynamo-dotnet"
+  - name: SCRIPTS_PATH
+    value: '$(LOCAL_PATH)/scripts/cicd'
+  - name: PUBLISH_PATH
+    value: '$(LOCAL_PATH)/dist/release/publish'
+  - name: BUILD_PATH
+    value: '$(LOCAL_PATH)/dist'
+  - name: ARTIFACTSTAGING_PATH
+    value: '$(Build.ArtifactStagingDirectory)/stage'
+  - name: TESTRESULT_PATH
+    value: '$(Agent.TempDirectory)'
+  - name: CODECOVERAGE_SETTINGS_PATH
+    value: '$(LOCAL_PATH)/app/test/SampleDynamoBlogAspNetApi.Tests'
+  - name: CONFIGURATION
+    value: 'Release'
+
+# Deploy variables
+# Update these to reflect the structure of your repository
+- ${{ if eq(parameters.tpl_type, 'Deploy') }}:
+  - name: RESOURCE_PIPELINE_NAME
+    value: 'dotnetApp'
+  - name: ARTIFACT_NAME
+    value: 'DotnetApp' # artifact name from build pipeline
+  - name: LOCAL_PATH
+    value: '$(PIPELINE.WORKSPACE)/$(RESOURCE_PIPELINE_NAME)/$(ARTIFACT_NAME)/stage'
+  - name: SCRIPTS_PATH
+    value: '$(LOCAL_PATH)/scripts/cicd'

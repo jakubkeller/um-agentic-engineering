@@ -1,0 +1,100 @@
+# /pipeline-examples/csharp/api-cors-lambda-dynamo-dotnet/scripts/cicd/destroy.yaml
+# Pipeline for destroying the infrastructure stack for an application.
+
+trigger: none
+
+resources:
+  repositories:
+  - repository: templates
+    type: git
+    name: ado-pipeline-templates
+variables:
+- template: vars/vars-global.yaml
+  parameters:
+    tpl_type: 'Destroy'
+
+# Queue Time Parameters
+parameters:
+- name: clean
+  displayName: Clean agent working directory on checkout
+  type: boolean
+  default: true
+  values:
+  - false
+  - true
+- name: Postclean
+  displayName: Post Completion Clean-up
+  type: boolean
+  default: true
+  values:
+  - false
+  - true
+- name: SERVICE_CONNECTION
+  displayName: ADO Service Connection Name
+  default: 'pod0-sandbox'
+  values:
+  - 'pod0-sandbox'
+  - 'operations-dev'
+  - 'operations-test'
+  - 'operations-stage'
+
+stages:
+# Application build
+- stage: Build
+  displayName: 'Build and destroy'
+  jobs:
+  - job: Build
+    displayName: "Build and destroy"
+    workspace:
+      clean: ${{parameters.clean}}
+    pool:
+      name: $(AGENT_POOL)
+    steps:
+    # Checkout code and clean agent working dir
+    - checkout: self
+
+    # Display environment variables
+    - script: |
+        echo "Environment variables"
+        echo "====================="
+        env | sort
+      displayName: 'Display Environment Variables'
+
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core sdk'
+      inputs:
+        version: '8.x'
+
+    # Build sollution. To destroy resources, cdk needs a built application.
+    - task: DotNetCoreCLI@2
+      displayName: 'Build Solution'
+      inputs:
+        command: 'build'
+        projects: '$(LOCAL_PATH)/**/*.sln'
+        workingDirectory: '$(LOCAL_PATH)'
+
+    # Dotnet publish
+    - task: DotNetCoreCLI@2
+      inputs:
+        command: publish
+        publishWebProjects: false
+        projects: '$(LOCAL_PATH)/app/src/**/*.csproj'
+        arguments: '--configuration Release --no-build --runtime linux-x64 --self-contained false --output $(PUBLISH_PATH)'
+        zipAfterPublish: false
+        modifyOutputPath: true
+        workingDirectory: $(LOCAL_PATH)
+      displayName: 'Publish App'
+
+    # Run destroy.sh
+    - task: AWSShellScript@1
+      displayName: 'CDK Destroy'
+      inputs:
+        awsCredentials: ${{ parameters.SERVICE_CONNECTION }}
+        regionName: $(REGION_NAME)
+        arguments: ''
+        scriptType: filePath
+        filePath: '$(SCRIPTS_PATH)/destroy.sh'
+        disableAutoCwd: true
+
+    # Post Destroy Clean-up
+    - template: /cleanup/postBuildClean-up.yml@templates
