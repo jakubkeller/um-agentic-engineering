@@ -1,9 +1,0 @@
-variables:
-  SERVICE_CONNECTION: "operations-stage" # Change for each development team
-  ENVIRONMENTTYPE: "stage" # variable name must match name used in BaseTaggingOptions.cs, value must match AWS tagging policy
-  # Notifications for Manual validation task
-  # This sends an email notification to the addresses below and will pause until ANY user clicks approve. (See deploy template)
-  # To require approval from specific users, see Service Connection documentation in the Wiki
-  # pauseNotify: |
-  #         email1@navitus.com
-  #         email2@navitus.com
