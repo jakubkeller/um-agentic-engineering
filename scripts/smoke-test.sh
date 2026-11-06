@@ -73,11 +73,11 @@ EOF
 }
 
 # publish_release <repo> <version> <label>
-# Commits whatever write_skill/write_broken_skill left staged, sets VERSION,
-# tags vVERSION. Call write_skill (or write_broken_skill) first.
+# Commits whatever write_skill/write_broken_skill left staged, tags vVERSION
+# (version comes from the tag alone, no in-repo VERSION file). Call
+# write_skill (or write_broken_skill) first.
 publish_release() {
   local repo="$1" version="$2"
-  printf '%s\n' "$version" > "$repo/VERSION"
   ( cd "$repo" && git add -A && git_q commit -m "v$version" && git_q tag "v$version" )
 }
 
@@ -123,6 +123,12 @@ grep -q 'fixture test skill, v1' "$(skill_file "$HOME1")" 2>/dev/null \
   && ok "installed skill content matches v1.0.0" \
   || bad "installed skill content does not match v1.0.0"
 
+RC_FILE="$HOME1/.zshrc"; [ -f "$RC_FILE" ] || RC_FILE="$HOME1/.bashrc"
+grep -qF ".um-agentic-engineering/bin" "$RC_FILE" 2>/dev/null \
+  && ok "install adds the bin dir to PATH in the shell rc file itself (no manual step)" \
+  || bad "install did not add a PATH line to $RC_FILE"
+RC_LINES_BEFORE="$(grep -cF ".um-agentic-engineering/bin" "$RC_FILE" 2>/dev/null || echo 0)"
+
 run "$INVOKER1" "$HOME1" version
 printf '%s' "$RUN_OUT" | grep -q 'Installed: 1.0.0' \
   && ok "version reports installed 1.0.0" \
@@ -138,6 +144,11 @@ AFTER_COUNT="$(find "$HOME1/.kiro" -type f | wc -l | tr -d ' ')"
 [ "$BEFORE_COUNT" = "$AFTER_COUNT" ] \
   && ok "idempotent re-run produced no duplicate artifacts ($AFTER_COUNT files, unchanged)" \
   || bad "file count changed across an idempotent re-run: $BEFORE_COUNT -> $AFTER_COUNT"
+
+RC_LINES_AFTER="$(grep -cF ".um-agentic-engineering/bin" "$RC_FILE" 2>/dev/null || echo 0)"
+[ "$RC_LINES_BEFORE" = "$RC_LINES_AFTER" ] \
+  && ok "re-running install does not duplicate the PATH line in $(basename "$RC_FILE")" \
+  || bad "PATH line count changed across an idempotent re-run: $RC_LINES_BEFORE -> $RC_LINES_AFTER"
 
 # A newer release gets published to the SAME remote.
 write_skill "$FIXTURE1" test-skill v2

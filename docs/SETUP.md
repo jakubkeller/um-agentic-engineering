@@ -20,17 +20,30 @@ too, just without requiring the IDE.
 
 ## Prerequisites
 
-- macOS or Linux with `bash` and `git` (both ship by default on macOS and
-  most Linux distros; this tool is written to be compatible with bash 3.2,
-  macOS's default).
+- macOS, Linux, or **Windows via WSL** — each with `bash` and `git` (both
+  ship by default on macOS, most Linux distros, and any WSL distro; this
+  tool is written to be compatible with bash 3.2, macOS's default).
 - A writable home directory and network access the first time you install
   or update (to fetch release tags). `rollback` never needs network.
 - [Kiro](https://kiro.dev) installed to actually use the toolkit — but the
   tool does not hard-require it. If Kiro isn't detected it installs anyway
   and warns, since Kiro will discover the files once it's installed.
 
-Windows is not supported or verified. If you need it, open an issue rather
-than assuming this works under WSL/Git Bash.
+**Native Windows (PowerShell/cmd, no WSL) is not supported.** `agentic-eng`
+is a bash script and the auto-PATH step writes to `~/.zshrc`/`~/.bashrc` —
+inside WSL that's the right place (it's just Linux), but there's no
+PowerShell/cmd equivalent today. If you're on Windows, install and run
+everything from inside a WSL terminal, not Git Bash (unverified) and not a
+native PowerShell/cmd prompt.
+
+> **Unverified on WSL specifically:** this installs into *that shell's*
+> `~/.kiro/` — i.e. WSL's Linux home directory. If Kiro itself runs as a
+> native Windows app rather than inside WSL (e.g. via a WSL/Remote
+> extension), it may read a *different* `~/.kiro/` (the Windows one) than
+> the one this installs into, and the skill/steering files would silently
+> never be seen by Kiro. Nobody has confirmed which case applies yet on a
+> real WSL VDI — check this once before relying on it, the same way the
+> real-tag end-to-end flow still needs a first manual check.
 
 ## Install (day zero)
 
@@ -51,13 +64,15 @@ install`. That one run:
 2. installs it into `~/.kiro/skills/` and `~/.kiro/steering/`,
 3. copies `agentic-eng` itself to `~/.kiro/.um-agentic-engineering/bin/`, so
    it keeps working even if you delete this clone,
-4. prints a one-time instruction to add that directory to your `PATH` if
-   it isn't already (we never edit your shell profile for you).
+4. adds that directory to your `PATH` itself, appending one marked,
+   idempotent line to `~/.zshrc`/`~/.bashrc` (whichever matches `$SHELL`) if
+   it isn't on `PATH` already.
 
 Restart Kiro, or reload its window, afterward so it picks up the new global
-skill. After adding the printed line to your shell profile and opening a new
-shell, `agentic-eng update|version|rollback` work as bare commands from any
-directory.
+skill — that one's on Kiro, there's no API to do it for you. Open a new
+shell (or `source` the rc file it printed) and `agentic-eng
+update|version|rollback` work as bare commands from any directory — no
+manual editing required.
 
 > **Known gap today:** this repo has no `vX.Y.Z` tags yet. Until a
 > maintainer creates and pushes the first one (`git tag -a v1.0.0 <commit>

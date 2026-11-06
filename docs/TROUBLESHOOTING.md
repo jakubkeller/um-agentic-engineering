@@ -14,17 +14,20 @@ git push origin v1.0.0
 ## `agentic-eng: command not found` after install
 
 `install`/`update` copy `agentic-eng` to
-`~/.kiro/.um-agentic-engineering/bin/agentic-eng`, but can't edit your shell
-profile for you. Add the printed line (something like
-`export PATH="$HOME/.kiro/.um-agentic-engineering/bin:$PATH"`) to
-`~/.zshrc`/`~/.bashrc`, then open a new shell. Until then, run it via the
-path directly, or from inside a clone as `./agentic-eng <command>`.
+`~/.kiro/.um-agentic-engineering/bin/agentic-eng` and append a PATH line to
+your `~/.zshrc`/`~/.bashrc` automatically — but that only takes effect in a
+**new** shell (a running process can't change its parent shell's
+environment; no tool can do that for you). Open a new terminal, or run
+`source ~/.zshrc` (or `~/.bashrc`), and it'll work as a bare command. Until
+then, run it via the full path, or from inside a clone as
+`./agentic-eng <command>`.
 
 ## `agentic-eng update` rejected a release
 
-This means the resolved release failed validation (missing `VERSION`, a
-skill's frontmatter `name:` not matching its folder, a missing/empty
-`description:`, or malformed steering frontmatter) — your previous working
+This means the resolved release failed validation (no `toolkit/skills`
+directory, a skill's frontmatter `name:` not matching its folder, a
+missing/empty `description:`, or malformed steering frontmatter) — your
+previous working
 installation is left exactly as it was, untouched. This should only ever
 happen if a tag was published with broken content; report it to whoever
 owns the release so they can fix and re-tag.

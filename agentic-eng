@@ -181,22 +181,12 @@ resolve_latest_tag() {
 stage_release() {
   local tag="$1" staging_dir="$2"
   mkdir -p "$staging_dir"
-  git -C "$SOURCE_DIR" archive "$tag" -- toolkit VERSION 2>/dev/null | tar -x -C "$staging_dir" \
+  git -C "$SOURCE_DIR" archive "$tag" -- toolkit 2>/dev/null | tar -x -C "$staging_dir" \
     || fail "Could not extract release $tag from the local release-tracking clone."
 }
 
 validate_release() {
-  local dir="$1" expected_version="$2"
-  if [ ! -f "$dir/VERSION" ]; then
-    warn "Staged release is missing a VERSION file."
-    return 1
-  fi
-  local v
-  v="$(tr -d '[:space:]' < "$dir/VERSION")"
-  if [ "$v" != "$expected_version" ]; then
-    warn "Staged release VERSION ($v) does not match its tag's expected version ($expected_version)."
-    return 1
-  fi
+  local dir="$1"
   if [ ! -d "$dir/toolkit/skills" ]; then
     warn "Staged release has no toolkit/skills directory."
     return 1
@@ -327,7 +317,6 @@ cache_release() {
   rm -rf "$release_dir"
   mkdir -p "$release_dir"
   cp -R "$staged_dir/toolkit" "$release_dir/toolkit"
-  cp "$staged_dir/VERSION" "$release_dir/VERSION"
 
   local fp
   fp="$(digest_dir "$release_dir/toolkit")"
@@ -370,14 +359,31 @@ install_self_to_bin() {
   fi
 }
 
-print_path_hint() {
+ensure_on_path() {
   case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *)
-      info "Add $BIN_DIR to your PATH to run 'agentic-eng' from anywhere, e.g. add this line to your shell profile (~/.zshrc or ~/.bashrc):"
-      info "  export PATH=\"$BIN_DIR:\$PATH\""
-      ;;
+    *":$BIN_DIR:"*) return 0 ;;
   esac
+
+  local rc_file
+  case "$(basename "${SHELL:-}")" in
+    zsh) rc_file="$INSTALL_HOME/.zshrc" ;;
+    *) rc_file="$INSTALL_HOME/.bashrc" ;;
+  esac
+
+  if [ -f "$rc_file" ] && grep -qF "$BIN_DIR" "$rc_file" 2>/dev/null; then
+    info "$BIN_DIR is already in $rc_file. Open a new shell if 'agentic-eng' still isn't found."
+    return 0
+  fi
+
+  if {
+    printf '\n# added by um-agentic-engineering (agentic-eng) — do not edit this line, re-running install/update checks for it\n'
+    printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
+  } >> "$rc_file" 2>/dev/null; then
+    info "Added $BIN_DIR to PATH in $rc_file. Open a new shell (or run: source $rc_file) for 'agentic-eng' to work as a bare command."
+  else
+    warn "Could not update $rc_file automatically. Add this line to your shell profile yourself:"
+    warn "  export PATH=\"$BIN_DIR:\$PATH\""
+  fi
 }
 
 do_install_or_update() {
@@ -392,6 +398,8 @@ do_install_or_update() {
 
   if [ -n "$installed_version" ] && [ "$installed_version" = "$version" ]; then
     info "Already up to date (installed: $version)."
+    install_self_to_bin
+    ensure_on_path
     return 0
   fi
 
@@ -400,7 +408,7 @@ do_install_or_update() {
   CLEANUP_DIR="$staging_dir"
 
   stage_release "$tag" "$staging_dir"
-  if ! validate_release "$staging_dir" "$version"; then
+  if ! validate_release "$staging_dir"; then
     fail "Release $tag failed validation and was rejected. Your current installation (${installed_version:-none}) is unchanged."
   fi
 
@@ -409,7 +417,7 @@ do_install_or_update() {
   install_self_to_bin
 
   info "Installed version $version ($tag, commit $commit)."
-  print_path_hint
+  ensure_on_path
   info "Restart Kiro (or reload its window) to pick up the change."
 }
 

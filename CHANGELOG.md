@@ -22,9 +22,10 @@ unreleased work (PBI 297784 + PBI 297785).
   and never by checking out/mutating the engineer's own working clone.
   **Known gap:** no tags exist yet; `install`/`update` correctly fail until a
   maintainer publishes the first one.
-- New release content is staged and validated (its `VERSION` matches the
-  tag, every skill's frontmatter matches its folder, has a description,
-  steering frontmatter is well-formed) before activation; a failing release
+- New release content is staged and validated (has a `toolkit/skills`
+  directory, every skill's frontmatter matches its folder, has a description,
+  steering frontmatter is well-formed) before activation — version comes
+  from the tag alone, never an in-repo `VERSION` file; a failing release
   is rejected and the previously-installed release is left untouched.
   Activation itself builds each artifact at a temp path and renames it into
   place.
@@ -32,9 +33,10 @@ unreleased work (PBI 297784 + PBI 297785).
   `current` + `previous` via atomically-swapped symlinks) makes `rollback`
   work with zero network access, with an integrity check before restoring.
 - `agentic-eng install`/`update` self-copy to
-  `~/.kiro/.um-agentic-engineering/bin/` and print a one-time PATH
-  instruction, so later commands work from anywhere without needing the
-  original clone to still exist.
+  `~/.kiro/.um-agentic-engineering/bin/` and add that directory to `PATH`
+  themselves (one marked, idempotent line in `~/.zshrc`/`~/.bashrc`), so
+  later commands work from anywhere, from a new shell, without needing the
+  original clone to still exist or any manual editing.
 - A generated (not shipped) steering file,
   `~/.kiro/steering/um-agentic-engineering-status.md`, records the installed
   version in every agent's context; removed on uninstall.

@@ -13,8 +13,8 @@ cd um-agentic-engineering
 ```
 
 Day-to-day, once set up: `agentic-eng install|update|version|rollback|uninstall`.
-See [docs/SETUP.md](docs/SETUP.md) for prerequisites, the one-time PATH step,
-verification, and uninstall, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+See [docs/SETUP.md](docs/SETUP.md) for prerequisites, verification, and
+uninstall, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 for common failure recovery.
 
 ## Layout
