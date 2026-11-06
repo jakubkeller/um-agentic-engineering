@@ -12,17 +12,20 @@ cd um-agentic-engineering
 ./install.sh
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for prerequisites, verification, updates,
-and uninstall, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for
-common failure recovery.
+Day-to-day, once set up: `agentic-eng install|update|version|rollback|uninstall`.
+See [docs/SETUP.md](docs/SETUP.md) for prerequisites, the one-time PATH step,
+verification, and uninstall, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+for common failure recovery.
 
 ## Layout
 
 - `toolkit/` — the global, installable content (skills, steering, reserved
   agents). See [toolkit/README.md](toolkit/README.md).
-- `install.sh` — the installer.
-- `scripts/smoke-test.sh` — repeatable, automated install verification.
-- `docs/` — setup, troubleshooting, and the PBI this toolkit was built from.
+- `agentic-eng` — the CLI: install/update/version/rollback/uninstall.
+- `install.sh` — day-zero bootstrap wrapper (`agentic-eng` can't be on PATH
+  before it's ever been run once); just calls `agentic-eng install`.
+- `scripts/smoke-test.sh` — repeatable, automated, fully-offline verification.
+- `docs/` — setup, troubleshooting, and the PBIs this toolkit was built from.
 
 ## Why
 
