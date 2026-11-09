@@ -13,26 +13,42 @@ repository without being copied into any of them:
 
 These paths and the IDE/CLI split come from Kiro's own documentation
 (kiro.dev/docs/skills, kiro.dev/docs/steering) — they are not something this
-installer invents. There is no documented Kiro CLI command or install API
-for *global* skills; Kiro's own IDE "Import a skill" feature works by
-copying files into `~/.kiro/skills/`, and that's exactly what `install.sh`
-does too, just without requiring the IDE.
+tool invents. There is no documented Kiro CLI command or install API for
+*global* skills; Kiro's own IDE "Import a skill" feature works by copying
+files into `~/.kiro/skills/`, and that's exactly what `agentic-eng` does
+too, just without requiring the IDE.
 
 ## Prerequisites
 
-- macOS or Linux with `bash` (ships by default on both; this installer is
-  written to be compatible with bash 3.2, macOS's default).
-- A writable home directory.
+- macOS, Linux, or **Windows via WSL** — each with `bash` and `git` (both
+  ship by default on macOS, most Linux distros, and any WSL distro; this
+  tool is written to be compatible with bash 3.2, macOS's default).
+- A writable home directory and network access the first time you install
+  or update (to fetch release tags). `rollback` never needs network.
 - [Kiro](https://kiro.dev) installed to actually use the toolkit — but the
-  installer does not hard-require it. If Kiro isn't detected it installs
-  anyway and warns, since Kiro will discover the files once it's installed.
-- `git` is optional. It's only used to record the installed commit hash in
-  the manifest for troubleshooting; its absence doesn't block install.
+  tool does not hard-require it. If Kiro isn't detected it installs anyway
+  and warns, since Kiro will discover the files once it's installed.
 
-Windows is not supported or verified by this installer. If you need it, open
-an issue rather than assuming the script works under WSL/Git Bash.
+**Native Windows (PowerShell/cmd, no WSL) is not supported.** `agentic-eng`
+is a bash script and the auto-PATH step writes to `~/.zshrc`/`~/.bashrc` —
+inside WSL that's the right place (it's just Linux), but there's no
+PowerShell/cmd equivalent today. If you're on Windows, install and run
+everything from inside a WSL terminal, not Git Bash (unverified) and not a
+native PowerShell/cmd prompt.
 
-## Install
+> **Unverified on WSL specifically:** this installs into *that shell's*
+> `~/.kiro/` — i.e. WSL's Linux home directory. If Kiro itself runs as a
+> native Windows app rather than inside WSL (e.g. via a WSL/Remote
+> extension), it may read a *different* `~/.kiro/` (the Windows one) than
+> the one this installs into, and the skill/steering files would silently
+> never be seen by Kiro. Nobody has confirmed which case applies yet on a
+> real WSL VDI — check this once before relying on it, the same way the
+> real-tag end-to-end flow still needs a first manual check.
+
+## Install (day zero)
+
+`agentic-eng` can't be on your PATH before you've ever run it once, so the
+very first install always starts from a clone:
 
 ```sh
 git clone git@github.com:jakubkeller/um-agentic-engineering.git
@@ -40,70 +56,83 @@ cd um-agentic-engineering
 ./install.sh
 ```
 
-This installs whatever release is currently checked out (the `VERSION` file
-at the repo root is the source of truth for the approved release). To get a
-later release, `git pull` (or check out a different tag) and run
-`./install.sh` again — it's safe to re-run any time.
+`install.sh` is a thin bootstrap wrapper — it just runs `./agentic-eng
+install`. That one run:
+
+1. resolves the **latest approved release** (the highest `vX.Y.Z` git tag on
+   this repo — not whatever commit happens to be checked out),
+2. installs it into `~/.kiro/skills/` and `~/.kiro/steering/`,
+3. copies `agentic-eng` itself to `~/.kiro/.um-agentic-engineering/bin/`, so
+   it keeps working even if you delete this clone,
+4. adds that directory to your `PATH` itself, appending one marked,
+   idempotent line to `~/.zshrc`/`~/.bashrc` (whichever matches `$SHELL`) if
+   it isn't on `PATH` already.
 
 Restart Kiro, or reload its window, afterward so it picks up the new global
-skill.
+skill — that one's on Kiro, there's no API to do it for you. Open a new
+shell (or `source` the rc file it printed) and `agentic-eng
+update|version|rollback` work as bare commands from any directory — no
+manual editing required.
+
+> **Known gap today:** this repo has no `vX.Y.Z` tags yet. Until a
+> maintainer creates and pushes the first one (`git tag -a v1.0.0 <commit>
+> && git push origin v1.0.0`), `agentic-eng install`/`update` will correctly
+> fail with "no approved release tags found yet" rather than silently
+> installing an arbitrary branch. This is intentional — see
+> `docs/TROUBLESHOOTING.md`.
+
+## Day-to-day commands
+
+```sh
+agentic-eng install     # first-time setup (see above)
+agentic-eng update      # explicitly check for and activate a newer release
+agentic-eng version     # show installed version, and latest available if reachable
+agentic-eng rollback    # restore the previously installed release (works offline)
+agentic-eng uninstall   # remove everything agentic-eng has installed
+```
+
+Nothing here runs automatically — no background checks, no cron, no Kiro
+hook. You decide when to run `update`, and every engineer can be on a
+different installed version with no coordination required.
 
 ## Verify
 
-Run the automated smoke test. It never touches your real `~/.kiro` — it
-exercises the installer against throwaway temp directories:
+Run the automated smoke test. It's fully offline (builds its own throwaway
+git fixtures instead of touching the real GitHub remote) and never touches
+your real `~/.kiro`:
 
 ```sh
 ./scripts/smoke-test.sh
 ```
 
-This confirms: a fresh install lands the sample skill at the documented
-path, a second install doesn't duplicate anything, an unrelated personal
-skill with a different name is left alone, uninstall removes exactly what
-was installed, and a broken/incomplete checkout fails loudly instead of
-pretending to succeed.
+This confirms: install, idempotent re-install, version reporting (both
+reachable and simulated-offline), a normal update, a *rejected* update
+(invalid release, prior install stays usable), rollback (including fully
+offline), uninstall, the `install.sh` bootstrap path, and a clean failure
+when the release source is unreachable.
 
 What it *cannot* confirm is that Kiro itself actually discovers and runs the
-skill — that requires the real IDE. Do this once, manually, after install:
+skill, or that the real tag-based resolution works against the real GitHub
+remote — both require the real IDE/remote. Once a real tag exists, do this
+once, manually:
 
-1. Open two unrelated repositories in Kiro (not this one, and not copies of
-   each other).
-2. In each, type `/repo-snapshot` in the chat.
-3. Confirm it runs and reports that repository's own branch/status/commits
-   — proving the same globally-installed skill works from both, with no
+1. From a fresh clone, run `./install.sh`. Confirm `agentic-eng` lands on
+   your PATH per the printed instructions.
+2. Open two unrelated repositories in Kiro (not this one). In each, type
+   `/repo-snapshot` in the chat and confirm it reports that repository's own
+   branch/status/commits — proving one global install serves both, with no
    `.kiro/skills/` committed into either repo.
-
-## Upgrade and rollback
-
-There is no separate release server or channel: this git repository's
-history *is* the release history, and each approved release is a tagged
-commit with its own `VERSION` file. Upgrading and rolling back are the same
-operation in both directions — check out the release you want, then
-re-run the installer:
-
-```sh
-# upgrade to the latest approved release
-git -C um-agentic-engineering pull
-cd um-agentic-engineering && ./install.sh
-
-# roll back to a previous release
-git -C um-agentic-engineering checkout v1.0.0
-cd um-agentic-engineering && ./install.sh
-```
-
-`install.sh` is idempotent and direction-agnostic: it diffs what's currently
-installed (per the manifest) against what the checked-out release ships,
-refreshes anything shared between the two, and removes anything the old
-install had that the newly-checked-out release doesn't — whether that's
-moving forward or backward. Your own personal skills/steering (anything it
-didn't install itself) are never touched either way.
+3. Publish a second tag, run `agentic-eng update`, confirm it activates, then
+   `agentic-eng rollback` and confirm it reverts.
 
 ## Uninstall
 
 ```sh
-./install.sh --uninstall
+agentic-eng uninstall
 ```
 
-Removes exactly the files recorded in
-`~/.kiro/.um-agentic-engineering/install-manifest.txt`, then removes that
-manifest directory too.
+Removes exactly what was recorded in
+`~/.kiro/.um-agentic-engineering/install-manifest.txt`, the generated
+version-status steering file, and the tool's entire state directory
+(`~/.kiro/.um-agentic-engineering/`, including the self-installed `bin/`
+copy) — nothing else in `~/.kiro/` is touched.
