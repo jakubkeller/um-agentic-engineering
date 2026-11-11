@@ -3,7 +3,7 @@
 Nothing in this repo has been tagged/released yet — there is no approved
 `vX.Y.Z` release, so there's no version number to attach to any of this
 until a maintainer cuts the first one. Everything below is accumulated,
-unreleased work (PBI 297784 + PBI 297785).
+unreleased work (PBI 297784 + PBI 297785 + PBI 297787).
 
 ## Unreleased
 
@@ -47,3 +47,44 @@ unreleased work (PBI 297784 + PBI 297785).
   simulated-offline), uninstall, the `install.sh` bootstrap path, and a
   clean failure when the release source is unreachable.
 - `docs/SETUP.md` and `docs/TROUBLESHOOTING.md`.
+- New skill: `repository-context`, source-grounded symbol/reference lookup
+  with verifiable file:line evidence. Shells out to Universal Ctags when
+  it's positively detected on `PATH` (not just anything named `ctags` —
+  stock macOS ships an unrelated BSD `ctags`), with a direct `grep`-based
+  text search as the fallback and as the always-on source of reference
+  hits alongside the index; every result is labeled `confidence=confirmed`
+  (an actual ctags definition) or `confidence=inferred` (a textual match),
+  never overclaiming a grep hit as verified structure.
+- The skill's generated index/cache lives entirely outside any tracked
+  repository (`~/.kiro/.um-agentic-engineering/repo-context/<hash>/`, keyed
+  by the analyzed repo's origin URL or path), as flat text files (a
+  `metadata.txt` with repo identity/commit/indexer/schema version, plus a
+  `symbols.idx`) — no database, daemon, or file watcher.
+- A bounded freshness/recovery state machine: a missing or corrupted cache
+  (detected via schema-version and symbol-count cross-checks, never
+  silently trusted) triggers a bounded rebuild — capped by file count and
+  by a portable bash timeout wrapper that kills the whole process group,
+  not just the indexer's own pid, so a hung or forking indexer can't hold
+  the run open — or a clearly labeled direct-source fallback if that
+  rebuild isn't possible. A cache that's merely stale by revision (HEAD
+  moved past the indexed commit) is never rebuilt automatically; instead a
+  live `git diff`/`git status` overlay is layered on every answer so
+  staged/uncommitted/newly-committed changes are always visible without a
+  full reindex.
+- `scripts/repo-context-smoke-test.sh`: fully offline, exercising a fresh
+  build, uncommitted/staged edits visible without reindexing, revision
+  drift without an unnecessary rebuild, missing-cache and corrupt-cache
+  recovery, a forced direct-source fallback, the file-count and timeout
+  rebuild bounds, and a clean failure outside a git repository — passes
+  meaningfully whether or not Universal Ctags happens to be installed on
+  the machine running it.
+- New steering file: `repository-context-awareness.md` (`inclusion:
+  always`), so an engineer never has to discover `repository-context`
+  manually. It tells every agent to check, once per repository per
+  session, whether that repository has ever been indexed
+  (`ctx:cache_state=MISSING`) and, if so, run the skill's own bounded
+  rebuild itself right then with a one-line heads-up — rather than wait to
+  be asked a question that needs it. Repositories that already have an
+  index (fresh, stale-by-revision, or corrupt) are left alone; those cases
+  are already handled by the skill itself when it's actually asked a
+  question.

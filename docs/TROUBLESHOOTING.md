@@ -73,7 +73,57 @@ remove the conflicting personal file, then re-run.
 Exists only so `scripts/smoke-test.sh` can run `agentic-eng` against a
 disposable directory instead of your real home directory. Don't set it for
 a real install — Kiro always reads your actual home directory regardless of
-this variable.
+this variable. `repo-context.sh` (the `repository-context` skill's helper
+script) honors the same variable for the same reason, used by
+`scripts/repo-context-smoke-test.sh`.
+
+## `repository-context` always says `direct-source-fallback`, even though `ctags` is on my PATH
+
+Stock macOS ships a BSD `ctags` (from the Xcode Command Line Tools) under
+the same command name as [Universal Ctags](https://ctags.io). The skill
+checks `ctags --version` for the string "Universal Ctags" rather than just
+whether a `ctags` command exists, specifically so it doesn't mistake the
+unrelated BSD tool for the real thing. Install the real one
+(`brew install universal-ctags` on macOS, `apt-get install universal-ctags`
+on Linux/WSL) to get `confidence=confirmed` results from an actual index;
+until then, every result is `confidence=inferred` from a direct text
+search — still correct, just without the verified-definition distinction.
+
+## `repository-context` reports `index_state=stale-by-revision`
+
+Expected, not a bug — it means the cached index was built against an older
+commit than the repository's current `HEAD`. The skill does not
+automatically reindex on every commit (that would mean an expensive
+indexing pass on every single question); instead it overlays a live `git
+diff`/`git status` pass on top of the existing index so nothing uncommitted
+or newly committed goes missing. Run `repo-context.sh rebuild --force` if
+you want the base index itself refreshed.
+
+## Kiro indexed a repo on its own and told me about it — did I ask for that?
+
+Not directly, but it's expected: the `repository-context-awareness`
+steering file (`inclusion: always`, installed to
+`~/.kiro/steering/`) tells every agent to check, once per repository per
+session, whether that repository has ever been indexed. If it hasn't
+(`ctx:cache_state=MISSING`), the agent runs `repo-context.sh rebuild`
+itself — bounded by the same file-count and timeout caps as any other
+rebuild — and mentions it in one line. It never does this more than once
+per repository per session, never reindexes a repo that already has a
+cache (fresh, stale, or even corrupt — those are handled by the skill
+itself when actually asked a question, not by this steering file), and
+never writes anything inside the repository itself. Delete
+`toolkit/steering/repository-context-awareness.md` from your installed
+release (or just ignore the one-line notice) if you'd rather it stayed
+fully on-demand.
+
+## Where is `repository-context`'s generated cache, and is it safe to delete?
+
+`~/.kiro/.um-agentic-engineering/repo-context/<hash>/`, one subdirectory per
+analyzed repository (keyed by that repository's origin URL or path, not by
+name). It's always safe to delete — the next lookup just triggers a bounded
+rebuild, or falls back to a direct text search if no indexer is available.
+It is never written inside any repository being analyzed, so there is
+nothing to `.gitignore`.
 
 ## Why doesn't `toolkit/agents/` install anything?
 

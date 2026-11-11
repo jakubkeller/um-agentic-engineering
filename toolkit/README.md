@@ -16,16 +16,25 @@ onto a workstation.
 - **`skills/`** — one directory per skill, each containing a `SKILL.md`
   (Kiro's required format: YAML frontmatter with `name` + `description`,
   then markdown instructions). Installed to `~/.kiro/skills/<name>/`.
-  Contains the sample skill for this PBI: `repo-snapshot`. Every skill here
-  must also pass `agentic-eng`'s pre-activation validation (frontmatter
-  `name:` matches the folder, non-empty `description:`) or a release
-  shipping it will be rejected, not silently installed.
+  Contains the sample skill for this PBI, `repo-snapshot`, and
+  `repository-context` (source-grounded symbol/reference lookup). A
+  skill's folder may also hold a companion deterministic script alongside
+  its `SKILL.md` (see `repository-context/repo-context.sh`) when its logic
+  needs to be testable, not just prose a Kiro agent follows — `agentic-eng`
+  copies and caches a skill's whole folder, so this needs no installer
+  changes. Every skill here must also pass `agentic-eng`'s pre-activation
+  validation (frontmatter `name:` matches the folder, non-empty
+  `description:`) or a release shipping it will be rejected, not silently
+  installed.
 - **`steering/`** — shared instruction files (Kiro "steering" docs) that
   should apply across every repository an engineer works in. Installed to
-  `~/.kiro/steering/`. Currently empty (reserved) — no cross-repo steering
-  content has been identified as broadly applicable yet. (Separately,
-  `agentic-eng` itself *generates* `~/.kiro/steering/um-agentic-engineering-status.md`
-  at install/update/rollback time to record the installed version in every
+  `~/.kiro/steering/`. Contains `repository-context-awareness.md`
+  (`inclusion: always`), which tells every agent to check, once per
+  repository per session, whether that repository has ever been indexed by
+  `repository-context` and — if not — index it itself right then rather
+  than waiting to be asked. (Separately, `agentic-eng` itself *generates*
+  `~/.kiro/steering/um-agentic-engineering-status.md` at
+  install/update/rollback time to record the installed version in every
   agent's context — that file isn't shipped from here, it's synthesized.)
 - **`agents/`** — reserved for shared custom agent definitions. Kiro's
   global discovery mechanism for custom agents has not been verified (unlike

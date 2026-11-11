@@ -28,6 +28,14 @@ too, just without requiring the IDE.
 - [Kiro](https://kiro.dev) installed to actually use the toolkit — but the
   tool does not hard-require it. If Kiro isn't detected it installs anyway
   and warns, since Kiro will discover the files once it's installed.
+- **Optional:** [Universal Ctags](https://ctags.io) (`brew install
+  universal-ctags` on macOS, `apt-get install universal-ctags` on
+  Linux/WSL) lets the `repository-context` skill return verified symbol
+  definitions. Without it, that skill automatically falls back to a direct
+  text search — no hard requirement, and nothing else in the toolkit needs
+  it. Note: stock macOS ships an unrelated BSD `ctags` under the same
+  name; the skill only uses the real Universal Ctags when it's actually
+  installed.
 
 **Native Windows (PowerShell/cmd, no WSL) is not supported.** `agentic-eng`
 is a bash script and the auto-PATH step writes to `~/.zshrc`/`~/.bashrc` —
@@ -103,18 +111,32 @@ your real `~/.kiro`:
 
 ```sh
 ./scripts/smoke-test.sh
+./scripts/repo-context-smoke-test.sh
 ```
 
-This confirms: install, idempotent re-install, version reporting (both
+The first confirms: install, idempotent re-install, version reporting (both
 reachable and simulated-offline), a normal update, a *rejected* update
 (invalid release, prior install stays usable), rollback (including fully
 offline), uninstall, the `install.sh` bootstrap path, and a clean failure
 when the release source is unreachable.
 
-What it *cannot* confirm is that Kiro itself actually discovers and runs the
-skill, or that the real tag-based resolution works against the real GitHub
-remote — both require the real IDE/remote. Once a real tag exists, do this
-once, manually:
+The second exercises `repository-context`'s `repo-context.sh` directly
+(no install needed): correct file:line evidence on a fresh index, an
+uncommitted/staged edit visible without a reindex, revision drift flagged
+without an unnecessary rebuild, a missing or corrupted cache recovering via
+a bounded rebuild, a forced direct-source fallback clearly labeled as such,
+the file-count and timeout bounds on rebuilding, and a clean failure outside
+a git repository. It passes meaningfully whether or not Universal Ctags is
+actually installed on the machine running it, since it branches on which
+indexer `repo-context.sh` itself reports using.
+
+What neither script *can* confirm is that Kiro itself actually discovers and
+runs a skill, that the real tag-based resolution works against the real
+GitHub remote, or that `repo-context.sh`'s Universal Ctags invocation (`ctags
+-x -L -`) behaves exactly as expected against a real Universal Ctags binary
+rather than a hand-crafted fixture — all three require things this repo's
+own dev environment doesn't have (the real IDE/remote, or Universal Ctags
+installed). Once a real tag exists, do this once, manually:
 
 1. From a fresh clone, run `./install.sh`. Confirm `agentic-eng` lands on
    your PATH per the printed instructions.
@@ -122,7 +144,15 @@ once, manually:
    `/repo-snapshot` in the chat and confirm it reports that repository's own
    branch/status/commits — proving one global install serves both, with no
    `.kiro/skills/` committed into either repo.
-3. Publish a second tag, run `agentic-eng update`, confirm it activates, then
+3. In one of those repositories, ask a symbol question that
+   `/repository-context` would answer (e.g. "where is `<some function>`
+   defined"). Confirm it returns correct file:line evidence plus the
+   repository's revision and dirty/stale/fallback flags. If Universal Ctags
+   is installed, confirm at least one result is labeled
+   `confidence=confirmed`; otherwise confirm it clearly reports
+   `direct-source-fallback` rather than silently returning only inferred
+   results.
+4. Publish a second tag, run `agentic-eng update`, confirm it activates, then
    `agentic-eng rollback` and confirm it reverts.
 
 ## Uninstall
