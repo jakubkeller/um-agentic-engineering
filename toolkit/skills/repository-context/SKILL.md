@@ -59,7 +59,13 @@ toolkit's own repo. It never modifies repository state — read-only, like
    - If `ctx:indexer=direct-source-fallback`, say so plainly (e.g. "no
      code-aware indexer was available, so this used a text search instead
      of structural analysis") rather than silently presenting fallback
-     results as if they came from a richer index.
+     results as if they came from a richer index. If
+     `ctx:fallback_reason=indexer-unavailable` specifically, also tell the
+     user the fix right then, in that same message, not just that
+     something's missing: "install Universal Ctags for verified results —
+     `brew install universal-ctags` (macOS) or `apt-get install
+     universal-ctags` (Linux/WSL)." Don't make them go find that
+     themselves in the docs.
 5. For a "what changed" / "is this still accurate" question instead of a
    symbol lookup, run `lookup`'s diff-only counterpart:
    ```

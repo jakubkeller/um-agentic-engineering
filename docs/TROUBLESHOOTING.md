@@ -89,6 +89,14 @@ on Linux/WSL) to get `confidence=confirmed` results from an actual index;
 until then, every result is `confidence=inferred` from a direct text
 search — still correct, just without the verified-definition distinction.
 
+You shouldn't have to go looking for that install command yourself: both
+the `repository-context` skill (when it actually falls back while
+answering a question) and the `repository-context-awareness` steering
+file (once per session, proactively) are supposed to state it directly
+rather than just saying something's missing. Run
+`bash ~/.kiro/skills/repository-context/repo-context.sh indexer-check`
+directly if you want to check without waiting for either of those.
+
 ## `repository-context` reports `index_state=stale-by-revision`
 
 Expected, not a bug — it means the cached index was built against an older

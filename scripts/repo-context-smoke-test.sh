@@ -227,6 +227,29 @@ printf '%s' "$RUN_OUT" | grep -q 'file=app.sh' \
   || bad "fallback incorrectly reported a confirmed result"
 
 #############################################################################
+echo "--- scenario: indexer-check proactively states the fix, not just the gap ---"
+#############################################################################
+HOME_IC="$(new_tmp_dir)"
+RUN_OUT="$(AGENTIC_TOOLKIT_HOME="$HOME_IC" AGENTIC_REPO_CONTEXT_FORCE_FALLBACK=1 bash "$REPO_CTX" indexer-check 2>&1)"
+printf '%s' "$RUN_OUT" | grep -q 'ctx:indexer_available=no' \
+  && ok "indexer-check correctly reports unavailable when forced" \
+  || bad "indexer-check did not report unavailable: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q 'brew install universal-ctags' \
+  && ok "indexer-check states the actual fix, not just that something's missing" \
+  || bad "indexer-check did not state an install command: $RUN_OUT"
+
+RUN_OUT="$(AGENTIC_TOOLKIT_HOME="$HOME_IC" bash "$REPO_CTX" indexer-check 2>&1)"
+if command -v ctags >/dev/null 2>&1 && ctags --version 2>/dev/null | grep -qi 'Universal Ctags'; then
+  printf '%s' "$RUN_OUT" | grep -q 'ctx:indexer_available=yes' \
+    && ok "indexer-check correctly reports available on a machine with real Universal Ctags" \
+    || bad "indexer-check misreported availability: $RUN_OUT"
+else
+  printf '%s' "$RUN_OUT" | grep -q 'ctx:indexer_available=no' \
+    && ok "indexer-check correctly reports unavailable on this machine (no real Universal Ctags)" \
+    || bad "indexer-check misreported availability: $RUN_OUT"
+fi
+
+#############################################################################
 echo "--- scenario: bounded rebuild — file-count cap (resource bound) ---"
 #############################################################################
 REPO3="$(new_tmp_dir)/repo3"
