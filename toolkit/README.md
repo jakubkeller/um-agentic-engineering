@@ -32,7 +32,10 @@ onto a workstation.
   (`inclusion: always`), which tells every agent to check, once per
   repository per session, whether that repository has ever been indexed by
   `repository-context` and — if not — index it itself right then rather
-  than waiting to be asked. (Separately, `agentic-eng` itself *generates*
+  than waiting to be asked; it also checks once per session (workstation-
+  level, not per-repo) whether Universal Ctags is installed at all and, if
+  not, states the exact install command up front rather than only
+  reporting that results are degraded. (Separately, `agentic-eng` itself *generates*
   `~/.kiro/steering/um-agentic-engineering-status.md` at
   install/update/rollback time to record the installed version in every
   agent's context — that file isn't shipped from here, it's synthesized.)

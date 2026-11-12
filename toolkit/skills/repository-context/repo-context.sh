@@ -7,6 +7,7 @@
 #   repo-context.sh rebuild [repo_root] [--force]  Bounded rebuild-or-fallback (force always rebuilds).
 #   repo-context.sh lookup  <symbol> [repo_root]   Find a symbol's definition/references with evidence.
 #   repo-context.sh diff    [repo_root]            Show working-tree status/diff overlay only.
+#   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
 #   repo-context.sh --help
 #
 # repo_root defaults to the git repo enclosing the current directory.
@@ -425,6 +426,16 @@ cmd_lookup() {
   diff_overlay "$root" "$symbol"
 }
 
+cmd_indexer_check() {
+  if has_universal_ctags; then
+    printf 'ctx:indexer_available=yes\n'
+    printf 'ctx:indexer=universal-ctags %s\n' "$(ctags_version_string)"
+  else
+    printf 'ctx:indexer_available=no\n'
+    printf 'ctx:fix=Install Universal Ctags for confirmed (not just inferred) results: brew install universal-ctags (macOS) or apt-get install universal-ctags (Linux/WSL)\n'
+  fi
+}
+
 cmd_diff() {
   local root_arg="${1:-}"
   local root
@@ -447,6 +458,7 @@ Usage:
   repo-context.sh rebuild [repo_root] [--force]  Bounded rebuild-or-fallback (force always rebuilds).
   repo-context.sh lookup  <symbol> [repo_root]   Find a symbol's definition/references with evidence.
   repo-context.sh diff    [repo_root]            Show working-tree status/diff overlay only.
+  repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
   repo-context.sh --help
 
 repo_root defaults to the git repo enclosing the current directory.
@@ -458,10 +470,11 @@ ARGS=()
 [ "$#" -gt 0 ] && ARGS=("${@:2}")
 
 case "$ACTION" in
-  status)  cmd_status "${ARGS[@]}" ;;
-  rebuild) cmd_rebuild "${ARGS[@]}" ;;
-  lookup)  cmd_lookup "${ARGS[@]}" ;;
-  diff)    cmd_diff "${ARGS[@]}" ;;
+  status)        cmd_status "${ARGS[@]}" ;;
+  rebuild)       cmd_rebuild "${ARGS[@]}" ;;
+  lookup)        cmd_lookup "${ARGS[@]}" ;;
+  diff)          cmd_diff "${ARGS[@]}" ;;
+  indexer-check) cmd_indexer_check ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;
 esac

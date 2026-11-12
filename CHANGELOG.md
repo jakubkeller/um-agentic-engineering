@@ -88,3 +88,10 @@ unreleased work (PBI 297784 + PBI 297785 + PBI 297787).
   index (fresh, stale-by-revision, or corrupt) are left alone; those cases
   are already handled by the skill itself when it's actually asked a
   question.
+- New `repo-context.sh indexer-check` subcommand, and both the skill and
+  the steering file now use it to proactively state the actual fix (the
+  exact `brew`/`apt-get install universal-ctags` command) the moment
+  Universal Ctags isn't available — once per session via steering, and
+  inline whenever a lookup actually falls back for that reason — instead
+  of only reporting that results are degraded and leaving the engineer to
+  go find the install command in the docs themselves.

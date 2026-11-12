@@ -11,6 +11,21 @@ symbol/reference lookup with file:line evidence. See that skill's own
 question. This note is only about one thing: noticing, once, when a
 repository has never been indexed at all.
 
+**Once per session** (not per repository — this is a workstation-level
+fact, not a per-repo one), the first time any of this applies:
+
+0. Run (no repo needed):
+   ```
+   bash ~/.kiro/skills/repository-context/repo-context.sh indexer-check
+   ```
+   If this fails outright (script missing), say nothing and skip the rest
+   of this entirely. If it reports `ctx:indexer_available=no`, remember
+   that for the rest of this session and surface it the first time you're
+   about to mention `repository-context` to the user at all (step 3 below,
+   or an actual lookup), by including the line it printed under
+   `ctx:fix=...` verbatim. Say it once, ever, this session — not once per
+   repository.
+
 The **first** time you're about to work in a git repository this session
 (not on every message, and not more than once per repository per
 session):
@@ -34,14 +49,17 @@ session):
    a reason, which is a normal, expected outcome here, not an error.
    Briefly tell the user what you did in one line (e.g. "indexed this repo
    for the first time so file/symbol questions get file:line evidence" —
-   or, if it fell back, say that plainly instead), then continue with
-   whatever was actually asked. Don't block your answer on this, don't ask
-   a follow-up question about it, and don't mention it again this session.
+   or, if it fell back because no indexer is installed, fold step 0's
+   install line into this same message instead of raising it separately),
+   then continue with whatever was actually asked. Don't block your
+   answer on this, don't ask a follow-up question about it, and don't
+   mention it again this session.
 4. Any other `ctx:cache_state` (`FRESH`, `STALE_REVISION`, `CORRUPT`,
-   `NO_COMMITS`) — say nothing. Those are already handled by the
-   `repository-context` skill itself whenever it's actually asked a
-   question; they don't need a proactive nudge, only the "never indexed at
-   all" case does.
+   `NO_COMMITS`) — say nothing beyond step 0's one-time indexer note.
+   Those states are already handled by the `repository-context` skill
+   itself whenever it's actually asked a question; they don't need a
+   proactive nudge, only "never indexed at all" and "no indexer available
+   at all" do.
 
 This never modifies anything inside the repository being worked in — the
 rebuild only ever writes to its own cache directory under
