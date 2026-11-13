@@ -76,42 +76,53 @@ toolkit's own repo. It never modifies repository state — read-only, like
    `~/.kiro/.um-agentic-engineering/repo-context/`, never inside the
    repository being analyzed.
 
-## Cross-repository dependency lookup (provider/consumer)
+## Cross-repository dependency check (provider/consumer)
 
-Use this when asked whether two **different** repositories actually depend
-on each other through one specific named contract — e.g. "does repo B call
-`fetch_order_status` from repo A?", "what consumes this API?", "is anyone
-still using `OrderValidator`?" across repos. This is intentionally narrow:
-it only confirms or denies that **one named symbol** has real textual
-evidence on both sides (a provider's definition/reference and a consumer's
-reference to the same name). It is not organization-wide dependency
-discovery, and it does not claim dependency types beyond "the same name is
-genuinely present in both repositories" — no network tracing, no schema
-matching, no semantic API binding.
+Confirm, with real evidence, whether one specific named contract defined
+in one repository (the **provider**) is actually used by another (the
+**consumer**): for example, a function one repo defines and another repo
+calls. This is intentionally narrow: it only confirms or denies that **one
+named symbol** has real textual evidence on both sides (a provider's
+definition/reference and a consumer's reference to the same name). It is
+not organization-wide dependency discovery, and it does not claim
+dependency types beyond "the same name is genuinely present in both
+repositories": no network tracing, no schema matching, no semantic API
+binding.
 
-1. Identify the **provider** repository (where the contract — a function,
-   endpoint handler, exported symbol — is defined or expected to live), the
-   **consumer** repository (where it's expected to be called/used), and the
-   exact symbol name to check. Both repositories must already be cloned
-   locally — this never clones, fetches, or otherwise reaches a remote.
+Run this directly whenever you already need to confirm one specific
+provider/consumer pair yourself. It is also the evidence engine behind the
+`cross-repo-dependency-awareness` steering file, which runs this
+automatically and states a known dependency to the engineer outright,
+before changing a function, without being asked (see step 5 below). In
+practice, that means most dependencies the engineer ever hears about were
+already confirmed and surfaced before anyone had to think to ask: a direct
+run of `relate` below is for confirming a new pair for the first time, not
+the primary way this reaches the engineer.
+
+1. Identify the **provider** repository (where the contract, a function,
+   endpoint handler, or exported symbol, is defined or expected to live),
+   the **consumer** repository (where it's expected to be called/used),
+   and the exact symbol name to check. Both repositories must already be
+   cloned locally; this never clones, fetches, or otherwise reaches a
+   remote.
 2. Run:
    ```
    bash <that-dir>/repo-context.sh relate "<symbol>" "<provider-repo-root>" "<consumer-repo-root>"
    ```
 3. Read `rel:status`:
-   - `supported` — real evidence was found on **both** sides. Report the
-     `PROVIDER ...` and `CONSUMER ...` lines back to the user exactly like
-     `lookup`'s `RESULT` lines — same `confidence=confirmed`/`inferred`
-     distinction, never presented as more certain than it is — along with
-     `rel:provider_head`/`rel:consumer_head` (the commit each side's
-     evidence was found at).
-   - `unknown` — evidence was missing on at least one side. Say plainly
+   - `supported`: real evidence was found on **both** sides. State the
+     `PROVIDER ...` and `CONSUMER ...` lines as fact, the same way
+     `lookup`'s `RESULT` lines are reported, with the same
+     `confidence=confirmed`/`inferred` distinction, never presented as more
+     certain than it is, along with `rel:provider_head`/`rel:consumer_head`
+     (the commit each side's evidence was found at).
+   - `unknown`: evidence was missing on at least one side. State plainly
      that no supported relationship was found between these two
-     repositories for that symbol — **never infer or invent a dependency**
+     repositories for that symbol. **Never infer or invent a dependency**
      just because the name sounds related or the two repos are known to
      interact some other way.
 4. The result is also persisted as a lightweight relationship record
-   (repository identities, commits, and evidence — no graph database, no
+   (repository identities, commits, and evidence; no graph database, no
    second indexer) under
    `~/.kiro/.um-agentic-engineering/repo-relations/`. To check whether a
    previously found relationship is still current **without** re-running
@@ -119,16 +130,16 @@ matching, no semantic API binding.
    ```
    bash <that-dir>/repo-context.sh relate-status "<symbol>" "<provider-repo-root>" "<consumer-repo-root>"
    ```
-   - `rel:record=missing` — this symbol/repo-pair has never been checked;
+   - `rel:record=missing`: this symbol/repo-pair has never been checked;
      run `relate` first.
-   - `rel:overall=fresh` — both repositories are still at the commit the
+   - `rel:overall=fresh`: both repositories are still at the commit the
      relationship was recorded at; the stored evidence still applies.
-   - `rel:overall=stale` — one or both repositories have moved on since the
-     record was written. Say so, then re-run `relate` to refresh it with
-     current evidence — the refreshed result may flip `supported` to
-     `unknown`, or vice versa, if the dependency was added or removed. This
-     reuses the exact same revision-comparison idea as single-repo
-     `lookup`'s `stale-by-revision`, not a new staleness model.
+   - `rel:overall=stale`: one or both repositories have moved on since the
+     record was written. State that plainly, then re-run `relate` to
+     refresh it with current evidence (the refreshed result may flip
+     `supported` to `unknown`, or vice versa, if the dependency was added
+     or removed). This reuses the exact same revision-comparison idea as
+     single-repo `lookup`'s `stale-by-revision`, not a new staleness model.
 5. To list every relationship already confirmed for a given repository
    (as provider, as consumer, or both) without re-running `relate` for
    each one by hand, use:
