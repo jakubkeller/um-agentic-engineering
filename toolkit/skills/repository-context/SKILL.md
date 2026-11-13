@@ -1,6 +1,6 @@
 ---
 name: repository-context
-description: Use when a question needs a specific symbol, file, or code-path location in the current repository with verifiable evidence — e.g. "where is X defined", "what calls Y", "show me the function for Z", "is this file:line still accurate" — or when a question asks whether one repository actually depends on another through a named contract, e.g. "what consumes this API", "does repo B still call this function from repo A". Returns file:line evidence, the repository's current revision, and flags stale or uncommitted context rather than silently trusting a cache.
+description: Use when a question needs a specific symbol, file, or code-path location in the current repository with verifiable evidence, e.g. "where is X defined", "what calls Y", "show me the function for Z", "is this file:line still accurate". Also use when checking whether one repository actually depends on another through a named contract, e.g. "what consumes this API", "does repo B still call this function from repo A". Returns file:line evidence, the repository's current revision, and flags stale or uncommitted context rather than silently trusting a cache.
 metadata:
   author: um-agentic-engineering
   version: 1.1.0
@@ -129,6 +129,18 @@ matching, no semantic API binding.
      `unknown`, or vice versa, if the dependency was added or removed. This
      reuses the exact same revision-comparison idea as single-repo
      `lookup`'s `stale-by-revision`, not a new staleness model.
+5. To list every relationship already confirmed for a given repository
+   (as provider, as consumer, or both) without re-running `relate` for
+   each one by hand, use:
+   ```
+   bash <that-dir>/repo-context.sh relations-for "<repo-root>" ["<symbol>"]
+   ```
+   This is what the `cross-repo-dependency-awareness` steering file uses to
+   proactively mention a known dependency the moment you're about to touch
+   a symbol that another repository is confirmed to depend on. The
+   engineer should never have to remember to ask "does anything depend on
+   this?" for a relationship that's already been confirmed once: you tell
+   them outright, unprompted.
 
 ## Notes
 
@@ -148,4 +160,4 @@ matching, no semantic API binding.
   daemon, or file watcher involved.
 - Run `bash <that-dir>/repo-context.sh --help` for the full command
   surface (`status`, `rebuild`, `lookup`, `diff`, `relate`,
-  `relate-status`).
+  `relate-status`, `relations-for`).

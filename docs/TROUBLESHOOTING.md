@@ -158,9 +158,23 @@ actually added or removed since the last check.
 
 `~/.kiro/.um-agentic-engineering/repo-relations/<hash>/`, one subdirectory
 per checked `(provider repo, symbol, consumer repo)` triple. Always safe to
-delete — the next `relate` call just rebuilds it; `relate-status` on a
-deleted record reports `rel:record=missing` rather than failing unclearly.
-It is never written inside either repository being analyzed.
+delete: the next `relate` call just rebuilds it, and `relate-status` or
+`relations-for` on a deleted record reports it as missing rather than
+failing unclearly. It is never written inside either repository being
+analyzed.
+
+## An agent told me "X depends on Y" without me asking. Did I ask for that?
+
+Not directly, but it's expected: the `cross-repo-dependency-awareness`
+steering file (`inclusion: always`) tells every agent to check, every time
+it's about to change an existing symbol's definition, whether another
+repository was previously confirmed (via a prior `relate` call) to depend
+on it, and to state that outright rather than wait to be asked. It only
+ever resurfaces a relationship that was already confirmed once; it never
+invents one, and it says nothing when nothing has been confirmed yet.
+Delete `toolkit/steering/cross-repo-dependency-awareness.md` from your
+installed release if you'd rather this stayed purely on-demand via
+`relate`/`relate-status`.
 
 ## Why doesn't `toolkit/agents/` install anything?
 

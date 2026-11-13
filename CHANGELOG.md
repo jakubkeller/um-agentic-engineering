@@ -95,28 +95,45 @@ unreleased work (PBI 297784 + PBI 297785 + PBI 297787 + PBI 297793).
   inline whenever a lookup actually falls back for that reason — instead
   of only reporting that results are degraded and leaving the engineer to
   go find the install command in the docs themselves.
-- New `repo-context.sh relate`/`relate-status` subcommands (PBI 297793):
-  `relate <symbol> <provider_repo> <consumer_repo>` reuses the exact same
-  confirmed/inferred evidence model as `lookup`, applied to two different
-  repository roots instead of one, to check whether a provider's contract
-  (a defined symbol) and a consumer's reference to that same name both
-  have real source evidence. `status=supported` only when both sides have
-  evidence; `status=unknown` otherwise — an unsupported relationship is
-  reported as unknown, never invented. The result is persisted as a
-  lightweight relationship record (repository identities, commits, and
-  evidence — no graph database, no second indexer) under
-  `~/.kiro/.um-agentic-engineering/repo-relations/<hash>/`, built via the
-  same atomic staging-then-rename pattern as the single-repo index cache.
-  `relate-status` reads a previously recorded relationship and compares
-  its recorded commits against each repository's current `HEAD` — the same
-  revision-comparison idea as single-repo `stale-by-revision` — reporting
-  `rel:overall=stale` once either repository has moved on, without
-  recomputing anything; re-running `relate` then refreshes the record with
-  current evidence, which can flip `supported` to `unknown` or vice versa
-  if the dependency was added or removed.
+- New `repo-context.sh relate`/`relate-status`/`relations-for` subcommands
+  (PBI 297793): `relate <symbol> <provider_repo> <consumer_repo>` reuses
+  the exact same confirmed/inferred evidence model as `lookup`, applied to
+  two different repository roots instead of one, to check whether a
+  provider's contract (a defined symbol) and a consumer's reference to
+  that same name both have real source evidence. `status=supported` only
+  when both sides have evidence; `status=unknown` otherwise, so an
+  unsupported relationship is reported as unknown, never invented. The
+  result is persisted as a lightweight relationship record (repository
+  identities, commits, and evidence, no graph database, no second indexer)
+  under `~/.kiro/.um-agentic-engineering/repo-relations/<hash>/`, built via
+  the same atomic staging-then-rename pattern as the single-repo index
+  cache. `relate-status` reads a previously recorded relationship and
+  compares its recorded commits against each repository's current `HEAD`
+  (the same revision-comparison idea as single-repo `stale-by-revision`),
+  reporting `rel:overall=stale` once either repository has moved on,
+  without recomputing anything; re-running `relate` then refreshes the
+  record with current evidence, which can flip `supported` to `unknown` or
+  vice versa if the dependency was added or removed. `relations-for
+  <repo_root> [symbol]` lists every relationship already confirmed for a
+  given repository, on either side, so an agent can notice an existing
+  confirmed dependency on its own instead of the engineer having to think
+  to ask about it.
+- New steering file: `cross-repo-dependency-awareness.md` (`inclusion:
+  always`). Every time an agent is about to change an existing symbol's
+  definition, it checks `relations-for` for that symbol in the current
+  repo and, if another repository was previously confirmed (via `relate`)
+  to depend on it, mentions that in one line before proceeding, rather
+  than waiting for the engineer to remember to ask "does anything depend
+  on this?" It says nothing when there's no confirmed relationship on
+  record, since this only resurfaces a dependency that's already been
+  confirmed once, not automatic discovery of unknown ones.
 - `scripts/repo-context-smoke-test.sh` extended with cross-repo scenarios:
   a real provider/consumer dependency found with evidence on both sides, an
   unsupported relationship reported as unknown rather than invented for a
   symbol absent from both repos, a missing relationship record reported as
-  such rather than guessed, and the full stale → re-`relate` → fresh cycle
-  after the consumer repo removes the call site.
+  such rather than guessed, the full stale-then-re-`relate`-then-fresh
+  cycle after the consumer repo removes the call site, `relations-for`
+  correctly reporting a confirmed relationship from either side, reporting
+  `count=0` for a repo that's never been part of one, and flagging a
+  counterpart repo as stale once it moves on without needing `relate`
+  re-run.

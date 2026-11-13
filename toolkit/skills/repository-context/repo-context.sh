@@ -16,6 +16,13 @@
 #   repo-context.sh relate-status <symbol> <provider_repo> <consumer_repo>
 #                                                   Report whether a previously recorded relationship
 #                                                   (from `relate`) is still fresh, without recomputing it.
+#   repo-context.sh relations-for <repo_root> [symbol]
+#                                                   List every previously recorded relationship that
+#                                                   involves this repo (optionally filtered to one
+#                                                   symbol), on either side, without recomputing anything.
+#                                                   Lets an agent already working in a repo notice an
+#                                                   existing confirmed dependency on its own, instead of
+#                                                   requiring the engineer to think to ask about it.
 #   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
 #   repo-context.sh --help
 #
@@ -34,7 +41,7 @@
 #
 # Cross-repo relationships (`relate`/`relate-status`) reuse this exact same
 # evidence model across two repo roots instead of one, and persist a
-# lightweight record — never a graph, never a second indexer — under
+# lightweight record (never a graph, never a second indexer) under
 # ${AGENTIC_TOOLKIT_HOME:-$HOME}/.kiro/.um-agentic-engineering/repo-relations/<key>/.
 #
 # Env vars:
@@ -380,7 +387,7 @@ relation_home() {
   printf '%s/.kiro/.um-agentic-engineering/repo-relations' "${AGENTIC_TOOLKIT_HOME:-$HOME}"
 }
 
-# relation_key <provider_root> <symbol> <consumer_root> — direction matters:
+# relation_key <provider_root> <symbol> <consumer_root>. Direction matters:
 # provider and consumer are not interchangeable, so they're never sorted.
 relation_key() {
   local provider_root="$1" symbol="$2" consumer_root="$3"
@@ -394,7 +401,7 @@ relation_dir_for() {
 # write_relation_record <provider_root> <consumer_root> <symbol> <status>
 #                        <provider_head> <consumer_head> <provider_evidence> <consumer_evidence>
 # Persists a lightweight relationship record (repo identities, revisions,
-# evidence) — never a graph, never a second indexer. Builds in a sibling
+# evidence; never a graph, never a second indexer). Builds in a sibling
 # temp dir first, same as build_index, so a reader never sees a partial
 # record.
 write_relation_record() {
@@ -546,7 +553,7 @@ cmd_relate() {
   printf 'rel:consumer_head=%s\n' "$consumer_head"
   printf 'rel:status=%s\n' "$status"
   if [ "$status" = "unknown" ]; then
-    warn "No supported relationship found for '$symbol' between these two repositories — reported as unknown, not invented."
+    warn "No supported relationship found for '$symbol' between these two repositories. Reported as unknown, not invented."
   fi
   printf '%s\n' "$provider_evidence" | grep '^RESULT ' | sed 's/^RESULT /PROVIDER /' || true
   printf '%s\n' "$consumer_evidence" | grep '^RESULT ' | sed 's/^RESULT /CONSUMER /' || true
@@ -604,10 +611,74 @@ cmd_relate_status() {
   printf 'rel:overall=%s\n' "$overall"
 
   if [ "$overall" = "stale" ]; then
-    warn "Recorded relationship is stale — one or both repositories moved past the recorded commit. Re-run 'relate' to refresh it."
+    warn "Recorded relationship is stale: one or both repositories moved past the recorded commit. Re-run 'relate' to refresh it."
     return 1
   fi
   return 0
+}
+
+cmd_relations_for() {
+  local repo_arg="${1:-}" symbol="${2:-}"
+  [ -n "$repo_arg" ] || fail "Usage: repo-context.sh relations-for <repo_root> [symbol]"
+  local root root_norm
+  root="$(resolve_root_or_fail "$repo_arg")" || exit 1
+  root_norm="$(cd "$root" && pwd -P)"
+
+  local home count=0
+  home="$(relation_home)"
+  if [ ! -d "$home" ]; then
+    printf 'rel:count=0\n'
+    return 0
+  fi
+
+  local d
+  for d in "$home"/*/; do
+    [ -d "$d" ] || continue
+    local record="$d/relation.txt"
+    [ -f "$record" ] || continue
+
+    local rec_symbol rec_provider_path rec_consumer_path rec_status
+    rec_symbol="$(read_field "$record" symbol 2>/dev/null || true)"
+    rec_provider_path="$(read_field "$record" provider_repo_path 2>/dev/null || true)"
+    rec_consumer_path="$(read_field "$record" consumer_repo_path 2>/dev/null || true)"
+    rec_status="$(read_field "$record" status 2>/dev/null || true)"
+
+    [ -n "$symbol" ] && [ "$rec_symbol" != "$symbol" ] && continue
+
+    local role counterpart own_recorded consumer_recorded
+    if [ "$rec_provider_path" = "$root_norm" ]; then
+      role="provider"
+      counterpart="$rec_consumer_path"
+      own_recorded="$(read_field "$record" provider_commit 2>/dev/null || true)"
+      consumer_recorded="$(read_field "$record" consumer_commit 2>/dev/null || true)"
+    elif [ "$rec_consumer_path" = "$root_norm" ]; then
+      role="consumer"
+      counterpart="$rec_provider_path"
+      own_recorded="$(read_field "$record" consumer_commit 2>/dev/null || true)"
+      consumer_recorded="$(read_field "$record" provider_commit 2>/dev/null || true)"
+    else
+      continue
+    fi
+
+    local own_head own_state
+    own_head="$(git -C "$root_norm" rev-parse HEAD 2>/dev/null || echo none)"
+    [ "$own_head" = "$own_recorded" ] && own_state="fresh" || own_state="stale"
+
+    local counterpart_state="unreachable"
+    if [ -d "$counterpart" ]; then
+      local counterpart_head
+      counterpart_head="$(git -C "$counterpart" rev-parse HEAD 2>/dev/null || true)"
+      if [ -n "$counterpart_head" ]; then
+        [ "$counterpart_head" = "$consumer_recorded" ] && counterpart_state="fresh" || counterpart_state="stale"
+      fi
+    fi
+
+    printf 'REL role=%s symbol=%s status=%s counterpart_repo=%s own_state=%s counterpart_state=%s\n' \
+      "$role" "$rec_symbol" "$rec_status" "$counterpart" "$own_state" "$counterpart_state"
+    count=$((count + 1))
+  done
+
+  printf 'rel:count=%s\n' "$count"
 }
 
 cmd_indexer_check() {
@@ -648,6 +719,9 @@ Usage:
   repo-context.sh relate-status <symbol> <provider_repo> <consumer_repo>
                                                   Report whether a previously recorded relationship is
                                                   still fresh, without recomputing it.
+  repo-context.sh relations-for <repo_root> [symbol]
+                                                  List every previously recorded relationship involving
+                                                  this repo, optionally filtered to one symbol.
   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
   repo-context.sh --help
 
@@ -666,6 +740,7 @@ case "$ACTION" in
   diff)          cmd_diff "${ARGS[@]}" ;;
   relate)        cmd_relate "${ARGS[@]}" ;;
   relate-status) cmd_relate_status "${ARGS[@]}" ;;
+  relations-for) cmd_relations_for "${ARGS[@]}" ;;
   indexer-check) cmd_indexer_check ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;

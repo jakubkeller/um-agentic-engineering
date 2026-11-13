@@ -18,9 +18,12 @@ onto a workstation.
   then markdown instructions). Installed to `~/.kiro/skills/<name>/`.
   Contains the sample skill for this PBI, `repo-snapshot`, and
   `repository-context` (source-grounded symbol/reference lookup, including
-  across two different repositories via `relate`/`relate-status` — a
+  across two different repositories via `relate`/`relate-status`: a
   provider/consumer dependency check for one named symbol, not
-  organization-wide discovery). A
+  organization-wide discovery). `relations-for` then lists every such
+  confirmed relationship a given repository is already part of, which is
+  what lets an agent notice a known dependency on its own instead of
+  needing to be asked. A
   skill's folder may also hold a companion deterministic script alongside
   its `SKILL.md` (see `repository-context/repo-context.sh`) when its logic
   needs to be testable, not just prose a Kiro agent follows — `agentic-eng`
@@ -34,14 +37,19 @@ onto a workstation.
   `~/.kiro/steering/`. Contains `repository-context-awareness.md`
   (`inclusion: always`), which tells every agent to check, once per
   repository per session, whether that repository has ever been indexed by
-  `repository-context` and — if not — index it itself right then rather
-  than waiting to be asked; it also checks once per session (workstation-
+  `repository-context` and, if not, index it itself right then rather
+  than waiting to be asked; it also checks once per session (workstation
   level, not per-repo) whether Universal Ctags is installed at all and, if
   not, states the exact install command up front rather than only
-  reporting that results are degraded. (Separately, `agentic-eng` itself *generates*
-  `~/.kiro/steering/um-agentic-engineering-status.md` at
+  reporting that results are degraded. Also contains
+  `cross-repo-dependency-awareness.md` (`inclusion: always`), which tells
+  every agent to check, every time it's about to change an existing
+  symbol's definition, whether another repository was already confirmed
+  (via `relate`) to depend on it, and mention that unprompted rather than
+  leaving the engineer to think to ask. (Separately, `agentic-eng` itself
+  *generates* `~/.kiro/steering/um-agentic-engineering-status.md` at
   install/update/rollback time to record the installed version in every
-  agent's context — that file isn't shipped from here, it's synthesized.)
+  agent's context: that file isn't shipped from here, it's synthesized.)
 - **`agents/`** — reserved for shared custom agent definitions. Kiro's
   global discovery mechanism for custom agents has not been verified (unlike
   skills and steering, which Kiro's docs explicitly document as reading from

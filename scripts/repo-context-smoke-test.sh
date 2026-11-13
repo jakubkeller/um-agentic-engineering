@@ -421,6 +421,74 @@ printf '%s' "$RUN_OUT" | grep -q '^rel:status=unknown' \
   && ok "the refreshed record correctly reflects the removed dependency, not the stale 'supported' value" \
   || bad "the refreshed record still shows the stale status: $RUN_OUT"
 
+#############################################################################
+echo "--- scenario: relations-for lets an agent notice a known dependency on its own, without being asked ---"
+#############################################################################
+PROVIDER2="$(new_tmp_dir)/provider2"
+init_fixture_repo "$PROVIDER2"
+cat > "$PROVIDER2/notify.sh" <<'EOF'
+#!/usr/bin/env bash
+send_notification() {
+  echo "sending"
+}
+EOF
+( cd "$PROVIDER2" && git add -A && git_q commit -m "add send_notification" )
+
+CONSUMER2="$(new_tmp_dir)/consumer2"
+init_fixture_repo "$CONSUMER2"
+cat > "$CONSUMER2/worker.sh" <<'EOF'
+#!/usr/bin/env bash
+process_job() {
+  send_notification
+}
+EOF
+( cd "$CONSUMER2" && git add -A && git_q commit -m "call send_notification" )
+
+HOMER2="$(new_tmp_dir)"
+run "$HOMER2" relate send_notification "$PROVIDER2" "$CONSUMER2"
+
+run "$HOMER2" relations-for "$PROVIDER2" send_notification
+printf '%s' "$RUN_OUT" | grep -q '^REL role=provider symbol=send_notification status=supported' \
+  && ok "relations-for reports the confirmed relationship from the provider's side, filtered to the symbol" \
+  || bad "relations-for did not report the confirmed relationship: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:count=1' \
+  && ok "relations-for reports exactly one matching relationship" \
+  || bad "relations-for reported the wrong count: $RUN_OUT"
+
+run "$HOMER2" relations-for "$CONSUMER2"
+printf '%s' "$RUN_OUT" | grep -q '^REL role=consumer symbol=send_notification status=supported' \
+  && ok "relations-for also reports the same relationship from the consumer's side, with no symbol filter" \
+  || bad "relations-for did not report the relationship from the consumer side: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: relations-for reports count=0 for a repo with no recorded relationships (steering stays silent) ---"
+#############################################################################
+UNRELATED="$(new_tmp_dir)/unrelated"
+init_fixture_repo "$UNRELATED"
+printf 'x\n' > "$UNRELATED/f.sh"
+( cd "$UNRELATED" && git add -A && git_q commit -m "initial" )
+run "$HOMER2" relations-for "$UNRELATED"
+printf '%s' "$RUN_OUT" | grep -q '^rel:count=0$' \
+  && ok "relations-for reports count=0 for a repo that's never been part of a recorded relationship" \
+  || bad "relations-for did not report count=0 for an unrelated repo: $RUN_OUT"
+! printf '%s' "$RUN_OUT" | grep -q '^REL ' \
+  && ok "no REL line is fabricated for a repo with nothing recorded" \
+  || bad "relations-for fabricated a REL line for an unrelated repo: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: relations-for flags the counterpart as stale once it moves on, without re-running relate ---"
+#############################################################################
+printf 'unrelated_change() {\n  :\n}\n' >> "$CONSUMER2/worker.sh"
+( cd "$CONSUMER2" && git add -A && git_q commit -m "unrelated consumer-side change" )
+
+run "$HOMER2" relations-for "$PROVIDER2" send_notification
+printf '%s' "$RUN_OUT" | grep -q 'own_state=fresh' \
+  && ok "relations-for reports the queried repo's own side as fresh when it hasn't moved" \
+  || bad "relations-for incorrectly flagged the unchanged provider side as stale: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q 'counterpart_state=stale' \
+  && ok "relations-for flags the counterpart repo as stale once it moves past the recorded commit, without recomputing relate" \
+  || bad "relations-for did not flag the counterpart as stale: $RUN_OUT"
+
 echo "----------------------------------------"
 echo "smoke test: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
