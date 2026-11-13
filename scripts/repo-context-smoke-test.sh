@@ -14,6 +14,12 @@
 # so this test passes meaningfully either way instead of assuming a
 # specific toolchain is installed.
 #
+# Also covers the cross-repository `relate`/`relate-status` commands (PBI
+# 297793): a real provider/consumer dependency across two separate fixture
+# repos, an unsupported relationship reported as unknown rather than
+# invented, and the stored relationship record going stale (and then being
+# updated) once the consumer repo moves past the commit it was recorded at.
+#
 # Usage: ./scripts/repo-context-smoke-test.sh
 set -uo pipefail
 
@@ -296,6 +302,124 @@ run "$HOME5" status "$PLAIN"
 printf '%s' "$RUN_OUT" | grep -qi 'not inside a git repository' \
   && ok "the failure message is clear and actionable, not a stack trace" \
   || bad "unexpected/unclear failure output: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: relate finds a real provider/consumer dependency across two repos (PBI 297793 AC1, AC2) ---"
+#############################################################################
+PROVIDER1="$(new_tmp_dir)/provider"
+init_fixture_repo "$PROVIDER1"
+cat > "$PROVIDER1/api.sh" <<'EOF'
+#!/usr/bin/env bash
+fetch_order_status() {
+  echo "status"
+}
+EOF
+( cd "$PROVIDER1" && git add -A && git_q commit -m "add fetch_order_status" )
+
+CONSUMER1="$(new_tmp_dir)/consumer"
+init_fixture_repo "$CONSUMER1"
+cat > "$CONSUMER1/client.sh" <<'EOF'
+#!/usr/bin/env bash
+check_order() {
+  fetch_order_status
+}
+EOF
+( cd "$CONSUMER1" && git add -A && git_q commit -m "call fetch_order_status" )
+
+HOMER="$(new_tmp_dir)"
+
+run "$HOMER" relate fetch_order_status "$PROVIDER1" "$CONSUMER1"
+[ "$RUN_EXIT" -eq 0 ] && ok "relate exits 0 for a real cross-repo dependency" || bad "relate exited $RUN_EXIT: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:status=supported' \
+  && ok "relate reports status=supported when both sides have evidence" \
+  || bad "relate did not report status=supported: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q 'PROVIDER symbol=fetch_order_status.*file=api.sh' \
+  && ok "relate reports provider-side evidence with file:line" \
+  || bad "missing provider evidence: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q 'CONSUMER symbol=fetch_order_status.*file=client.sh' \
+  && ok "relate reports consumer-side evidence with file:line" \
+  || bad "missing consumer evidence: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q 'PROVIDER .*confidence=' \
+  && ok "provider evidence carries a confidence label, same vocabulary as single-repo lookup" \
+  || bad "provider evidence missing a confidence label: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q 'CONSUMER .*confidence=' \
+  && ok "consumer evidence carries a confidence label, same vocabulary as single-repo lookup" \
+  || bad "consumer evidence missing a confidence label: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: an engineer can ask what consumes a contract and get the grounded relationship back (AC2) ---"
+#############################################################################
+run "$HOMER" relate-status fetch_order_status "$PROVIDER1" "$CONSUMER1"
+[ "$RUN_EXIT" -eq 0 ] && ok "relate-status exits 0 for a freshly recorded relationship" || bad "relate-status exited $RUN_EXIT: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:overall=fresh' \
+  && ok "relate-status reports the just-recorded relationship as fresh" \
+  || bad "relate-status did not report fresh: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:status=supported' \
+  && ok "relate-status retrieves the stored supported relationship without recomputing it" \
+  || bad "relate-status lost the stored status: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: relate-status before any relate call reports no record, not a guess ---"
+#############################################################################
+run "$HOMER" relate-status never_checked_symbol "$PROVIDER1" "$CONSUMER1"
+[ "$RUN_EXIT" -ne 0 ] \
+  && ok "relate-status exits non-zero when no record exists yet" \
+  || bad "relate-status exited 0 with no record: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:record=missing' \
+  && ok "relate-status reports record=missing rather than guessing a status" \
+  || bad "relate-status did not report a missing record: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: an unsupported relationship is reported as unknown, not invented (AC4) ---"
+#############################################################################
+run "$HOMER" relate totally_unrelated_symbol "$PROVIDER1" "$CONSUMER1"
+[ "$RUN_EXIT" -ne 0 ] \
+  && ok "relate exits non-zero when no relationship is found (status=unknown is not success)" \
+  || bad "relate exited 0 for a symbol absent from both repos: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:status=unknown' \
+  && ok "relate reports status=unknown instead of inventing a relationship for a symbol absent from both repos" \
+  || bad "relate did not report unknown for a nonexistent symbol: $RUN_OUT"
+! printf '%s' "$RUN_OUT" | grep -q '^PROVIDER ' \
+  && ok "no provider evidence is fabricated for a symbol absent from the provider repo" \
+  || bad "relate fabricated provider evidence: $RUN_OUT"
+! printf '%s' "$RUN_OUT" | grep -q '^CONSUMER ' \
+  && ok "no consumer evidence is fabricated for a symbol absent from the consumer repo" \
+  || bad "relate fabricated consumer evidence: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: stored relationship goes stale, then is updated, after the consumer removes the call (AC3, AC5) ---"
+#############################################################################
+cat > "$CONSUMER1/client.sh" <<'EOF'
+#!/usr/bin/env bash
+check_order() {
+  echo "no longer calling the order API"
+}
+EOF
+( cd "$CONSUMER1" && git add -A && git_q commit -m "remove the order API call" )
+
+run "$HOMER" relate-status fetch_order_status "$PROVIDER1" "$CONSUMER1"
+printf '%s' "$RUN_OUT" | grep -q '^rel:consumer_state=stale' \
+  && ok "relate-status flags the recorded relationship stale once the consumer repo moves past the recorded commit" \
+  || bad "relate-status did not flag staleness after the consumer commit: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:overall=stale' \
+  && ok "relate-status surfaces overall=stale rather than silently trusting the old evidence" \
+  || bad "relate-status did not report overall=stale: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:status=supported' \
+  && ok "relate-status still shows the last-recorded status alongside the staleness flag, for context" \
+  || bad "relate-status lost the last-recorded status: $RUN_OUT"
+
+run "$HOMER" relate fetch_order_status "$PROVIDER1" "$CONSUMER1"
+printf '%s' "$RUN_OUT" | grep -q '^rel:status=unknown' \
+  && ok "re-running relate after the call site is removed updates the relationship to unknown instead of keeping a stale 'supported'" \
+  || bad "relate did not update to unknown after the call site was removed: $RUN_OUT"
+
+run "$HOMER" relate-status fetch_order_status "$PROVIDER1" "$CONSUMER1"
+printf '%s' "$RUN_OUT" | grep -q '^rel:overall=fresh' \
+  && ok "relate-status reports fresh again immediately after relate recorded the updated (unknown) relationship" \
+  || bad "relate-status did not report fresh after the update: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^rel:status=unknown' \
+  && ok "the refreshed record correctly reflects the removed dependency, not the stale 'supported' value" \
+  || bad "the refreshed record still shows the stale status: $RUN_OUT"
 
 echo "----------------------------------------"
 echo "smoke test: $PASS passed, $FAIL failed"

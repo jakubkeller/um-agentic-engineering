@@ -133,6 +133,35 @@ rebuild, or falls back to a direct text search if no indexer is available.
 It is never written inside any repository being analyzed, so there is
 nothing to `.gitignore`.
 
+## `relate` reports `rel:status=unknown` even though I know these two repos depend on each other
+
+Expected, not a bug, if the exact symbol name you passed doesn't literally
+appear in both repositories' current working trees. `relate` only confirms
+one specific named contract textually on both sides (a provider's
+definition/reference and a consumer's reference to that same name) — it
+doesn't trace imports, follow renamed/aliased symbols, or reason about the
+dependency any other way. Check the exact spelling, and that you passed the
+provider repo and the consumer repo in the right order (direction matters —
+`relate` doesn't treat them as interchangeable). This is intentional: an
+unsupported relationship is reported as unknown rather than invented.
+
+## `relate-status` says `rel:overall=stale`
+
+Expected, not a bug — one or both repositories have moved past the commit
+the relationship was last recorded at (`relate` doesn't watch for new
+commits on its own; there's no daemon). Re-run `relate` to recompute and
+refresh the stored record with current evidence — the refreshed result can
+flip `supported` to `unknown`, or vice versa, if the dependency was
+actually added or removed since the last check.
+
+## Where is the cross-repo relationship record, and is it safe to delete?
+
+`~/.kiro/.um-agentic-engineering/repo-relations/<hash>/`, one subdirectory
+per checked `(provider repo, symbol, consumer repo)` triple. Always safe to
+delete — the next `relate` call just rebuilds it; `relate-status` on a
+deleted record reports `rel:record=missing` rather than failing unclearly.
+It is never written inside either repository being analyzed.
+
 ## Why doesn't `toolkit/agents/` install anything?
 
 Kiro's docs explicitly confirm global discovery paths for skills

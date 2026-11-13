@@ -33,7 +33,11 @@ repository — nothing to import or configure per-repo:
   (a text match) — see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
   for what those mean. Works with no setup; install
   [Universal Ctags](https://ctags.io) for more `confirmed` results (see
-  [docs/SETUP.md](docs/SETUP.md)).
+  [docs/SETUP.md](docs/SETUP.md)). The same skill also answers a narrow
+  cross-repository question — "what consumes this API?", "does repo B
+  still call this function from repo A?" — for one named symbol across two
+  given repositories, with source evidence from both sides, reported as
+  `unknown` rather than invented when it isn't actually there.
 
 Both skills are read-only. **Unverified:** whether Kiro invokes a skill
 purely from conversational phrasing (vs. a typed `/command`) hasn't been

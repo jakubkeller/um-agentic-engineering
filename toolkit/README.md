@@ -17,7 +17,10 @@ onto a workstation.
   (Kiro's required format: YAML frontmatter with `name` + `description`,
   then markdown instructions). Installed to `~/.kiro/skills/<name>/`.
   Contains the sample skill for this PBI, `repo-snapshot`, and
-  `repository-context` (source-grounded symbol/reference lookup). A
+  `repository-context` (source-grounded symbol/reference lookup, including
+  across two different repositories via `relate`/`relate-status` — a
+  provider/consumer dependency check for one named symbol, not
+  organization-wide discovery). A
   skill's folder may also hold a companion deterministic script alongside
   its `SKILL.md` (see `repository-context/repo-context.sh`) when its logic
   needs to be testable, not just prose a Kiro agent follows — `agentic-eng`

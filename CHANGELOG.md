@@ -3,7 +3,7 @@
 Nothing in this repo has been tagged/released yet — there is no approved
 `vX.Y.Z` release, so there's no version number to attach to any of this
 until a maintainer cuts the first one. Everything below is accumulated,
-unreleased work (PBI 297784 + PBI 297785 + PBI 297787).
+unreleased work (PBI 297784 + PBI 297785 + PBI 297787 + PBI 297793).
 
 ## Unreleased
 
@@ -95,3 +95,28 @@ unreleased work (PBI 297784 + PBI 297785 + PBI 297787).
   inline whenever a lookup actually falls back for that reason — instead
   of only reporting that results are degraded and leaving the engineer to
   go find the install command in the docs themselves.
+- New `repo-context.sh relate`/`relate-status` subcommands (PBI 297793):
+  `relate <symbol> <provider_repo> <consumer_repo>` reuses the exact same
+  confirmed/inferred evidence model as `lookup`, applied to two different
+  repository roots instead of one, to check whether a provider's contract
+  (a defined symbol) and a consumer's reference to that same name both
+  have real source evidence. `status=supported` only when both sides have
+  evidence; `status=unknown` otherwise — an unsupported relationship is
+  reported as unknown, never invented. The result is persisted as a
+  lightweight relationship record (repository identities, commits, and
+  evidence — no graph database, no second indexer) under
+  `~/.kiro/.um-agentic-engineering/repo-relations/<hash>/`, built via the
+  same atomic staging-then-rename pattern as the single-repo index cache.
+  `relate-status` reads a previously recorded relationship and compares
+  its recorded commits against each repository's current `HEAD` — the same
+  revision-comparison idea as single-repo `stale-by-revision` — reporting
+  `rel:overall=stale` once either repository has moved on, without
+  recomputing anything; re-running `relate` then refreshes the record with
+  current evidence, which can flip `supported` to `unknown` or vice versa
+  if the dependency was added or removed.
+- `scripts/repo-context-smoke-test.sh` extended with cross-repo scenarios:
+  a real provider/consumer dependency found with evidence on both sides, an
+  unsupported relationship reported as unknown rather than invented for a
+  symbol absent from both repos, a missing relationship record reported as
+  such rather than guessed, and the full stale → re-`relate` → fresh cycle
+  after the consumer repo removes the call site.

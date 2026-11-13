@@ -7,6 +7,15 @@
 #   repo-context.sh rebuild [repo_root] [--force]  Bounded rebuild-or-fallback (force always rebuilds).
 #   repo-context.sh lookup  <symbol> [repo_root]   Find a symbol's definition/references with evidence.
 #   repo-context.sh diff    [repo_root]            Show working-tree status/diff overlay only.
+#   repo-context.sh relate  <symbol> <provider_repo> <consumer_repo>
+#                                                   Check one named symbol for real evidence on BOTH
+#                                                   sides of two different repositories (a provider's
+#                                                   definition/reference and a consumer's reference to
+#                                                   the same name), and persist a lightweight relationship
+#                                                   record of the result.
+#   repo-context.sh relate-status <symbol> <provider_repo> <consumer_repo>
+#                                                   Report whether a previously recorded relationship
+#                                                   (from `relate`) is still fresh, without recomputing it.
 #   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
 #   repo-context.sh --help
 #
@@ -23,6 +32,11 @@
 # a plain directory of flat text files (metadata.txt + symbols.idx) — never
 # inside the repo being analyzed, never a database/daemon/watcher.
 #
+# Cross-repo relationships (`relate`/`relate-status`) reuse this exact same
+# evidence model across two repo roots instead of one, and persist a
+# lightweight record — never a graph, never a second indexer — under
+# ${AGENTIC_TOOLKIT_HOME:-$HOME}/.kiro/.um-agentic-engineering/repo-relations/<key>/.
+#
 # Env vars:
 #   AGENTIC_TOOLKIT_HOME            Redirect cache under a throwaway home (see scripts/smoke-test.sh's use of the same variable for agentic-eng).
 #   AGENTIC_REPO_CONTEXT_MAX_FILES  Bounded-rebuild file-count cap (default 20000).
@@ -31,6 +45,7 @@
 set -uo pipefail
 
 CACHE_SCHEMA_VERSION=1
+RELATION_SCHEMA_VERSION=1
 DEFAULT_MAX_FILES=20000
 DEFAULT_TIMEOUT=15
 
@@ -361,6 +376,64 @@ search_symbol() {
   done < <(candidate_files "$root")
 }
 
+relation_home() {
+  printf '%s/.kiro/.um-agentic-engineering/repo-relations' "${AGENTIC_TOOLKIT_HOME:-$HOME}"
+}
+
+# relation_key <provider_root> <symbol> <consumer_root> — direction matters:
+# provider and consumer are not interchangeable, so they're never sorted.
+relation_key() {
+  local provider_root="$1" symbol="$2" consumer_root="$3"
+  digest_string "relate:$(repo_identity "$provider_root")|${symbol}|$(repo_identity "$consumer_root")"
+}
+
+relation_dir_for() {
+  printf '%s/%s' "$(relation_home)" "$(relation_key "$1" "$2" "$3")"
+}
+
+# write_relation_record <provider_root> <consumer_root> <symbol> <status>
+#                        <provider_head> <consumer_head> <provider_evidence> <consumer_evidence>
+# Persists a lightweight relationship record (repo identities, revisions,
+# evidence) — never a graph, never a second indexer. Builds in a sibling
+# temp dir first, same as build_index, so a reader never sees a partial
+# record.
+write_relation_record() {
+  local provider_root="$1" consumer_root="$2" symbol="$3" status="$4"
+  local provider_head="$5" consumer_head="$6" provider_evidence="$7" consumer_evidence="$8"
+  local rel_dir
+  rel_dir="$(relation_dir_for "$provider_root" "$symbol" "$consumer_root")"
+  mkdir -p "$(relation_home)"
+  local staging
+  staging="$(mktemp -d "$(relation_home)/.staging.XXXXXX")" || return 1
+
+  local provider_origin consumer_origin
+  provider_origin="$(git -C "$provider_root" remote get-url origin 2>/dev/null || true)"
+  [ -z "$provider_origin" ] && provider_origin="none"
+  consumer_origin="$(git -C "$consumer_root" remote get-url origin 2>/dev/null || true)"
+  [ -z "$consumer_origin" ] && consumer_origin="none"
+
+  printf '%s\n' "$provider_evidence" | grep '^RESULT ' > "$staging/provider.evidence" 2>/dev/null || true
+  printf '%s\n' "$consumer_evidence" | grep '^RESULT ' > "$staging/consumer.evidence" 2>/dev/null || true
+
+  {
+    printf 'schema_version: %s\n' "$RELATION_SCHEMA_VERSION"
+    printf 'symbol: %s\n' "$symbol"
+    printf 'provider_repo_path: %s\n' "$(cd "$provider_root" && pwd -P)"
+    printf 'provider_origin_url: %s\n' "$provider_origin"
+    printf 'provider_commit: %s\n' "$provider_head"
+    printf 'consumer_repo_path: %s\n' "$(cd "$consumer_root" && pwd -P)"
+    printf 'consumer_origin_url: %s\n' "$consumer_origin"
+    printf 'consumer_commit: %s\n' "$consumer_head"
+    printf 'status: %s\n' "$status"
+    printf 'provider_evidence_count: %s\n' "$(wc -l < "$staging/provider.evidence" | tr -d ' ')"
+    printf 'consumer_evidence_count: %s\n' "$(wc -l < "$staging/consumer.evidence" | tr -d ' ')"
+    printf 'generated_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$staging/relation.txt"
+
+  rm -rf "$rel_dir"
+  mv "$staging" "$rel_dir"
+}
+
 cmd_status() {
   local root
   root="$(resolve_root_or_fail "${1:-}")" || exit 1
@@ -426,6 +499,117 @@ cmd_lookup() {
   diff_overlay "$root" "$symbol"
 }
 
+cmd_relate() {
+  local symbol="${1:-}" provider_arg="${2:-}" consumer_arg="${3:-}"
+  if [ -z "$symbol" ] || [ -z "$provider_arg" ] || [ -z "$consumer_arg" ]; then
+    fail "Usage: repo-context.sh relate <symbol> <provider_repo> <consumer_repo>"
+  fi
+  local provider_root consumer_root
+  provider_root="$(resolve_root_or_fail "$provider_arg")" || exit 1
+  consumer_root="$(resolve_root_or_fail "$consumer_arg")" || exit 1
+
+  local provider_cache_dir consumer_cache_dir
+  provider_cache_dir="$(cache_dir_for "$provider_root")"
+  consumer_cache_dir="$(cache_dir_for "$consumer_root")"
+
+  ensure_fresh_or_fallback "$provider_root" "$provider_cache_dir" 0
+  local provider_eff_state="$EFF_STATE" provider_indexer="$EFF_INDEXER"
+  local provider_head
+  provider_head="$(git -C "$provider_root" rev-parse HEAD 2>/dev/null || echo none)"
+  local provider_evidence
+  provider_evidence="$(search_symbol "$provider_root" "$provider_cache_dir" "$symbol" "$provider_eff_state" "$provider_indexer"; diff_overlay "$provider_root" "$symbol")"
+
+  ensure_fresh_or_fallback "$consumer_root" "$consumer_cache_dir" 0
+  local consumer_eff_state="$EFF_STATE" consumer_indexer="$EFF_INDEXER"
+  local consumer_head
+  consumer_head="$(git -C "$consumer_root" rev-parse HEAD 2>/dev/null || echo none)"
+  local consumer_evidence
+  consumer_evidence="$(search_symbol "$consumer_root" "$consumer_cache_dir" "$symbol" "$consumer_eff_state" "$consumer_indexer"; diff_overlay "$consumer_root" "$symbol")"
+
+  local provider_hits consumer_hits status
+  provider_hits="$(printf '%s' "$provider_evidence" | grep -c '^RESULT ' || true)"
+  consumer_hits="$(printf '%s' "$consumer_evidence" | grep -c '^RESULT ' || true)"
+
+  if [ "${provider_hits:-0}" -gt 0 ] && [ "${consumer_hits:-0}" -gt 0 ]; then
+    status="supported"
+  else
+    status="unknown"
+  fi
+
+  write_relation_record "$provider_root" "$consumer_root" "$symbol" "$status" \
+    "$provider_head" "$consumer_head" "$provider_evidence" "$consumer_evidence"
+
+  printf 'rel:symbol=%s\n' "$symbol"
+  printf 'rel:provider_repo=%s\n' "$provider_root"
+  printf 'rel:provider_head=%s\n' "$provider_head"
+  printf 'rel:consumer_repo=%s\n' "$consumer_root"
+  printf 'rel:consumer_head=%s\n' "$consumer_head"
+  printf 'rel:status=%s\n' "$status"
+  if [ "$status" = "unknown" ]; then
+    warn "No supported relationship found for '$symbol' between these two repositories — reported as unknown, not invented."
+  fi
+  printf '%s\n' "$provider_evidence" | grep '^RESULT ' | sed 's/^RESULT /PROVIDER /' || true
+  printf '%s\n' "$consumer_evidence" | grep '^RESULT ' | sed 's/^RESULT /CONSUMER /' || true
+
+  [ "$status" = "supported" ]
+}
+
+cmd_relate_status() {
+  local symbol="${1:-}" provider_arg="${2:-}" consumer_arg="${3:-}"
+  if [ -z "$symbol" ] || [ -z "$provider_arg" ] || [ -z "$consumer_arg" ]; then
+    fail "Usage: repo-context.sh relate-status <symbol> <provider_repo> <consumer_repo>"
+  fi
+  local provider_root consumer_root
+  provider_root="$(resolve_root_or_fail "$provider_arg")" || exit 1
+  consumer_root="$(resolve_root_or_fail "$consumer_arg")" || exit 1
+
+  local rel_dir record
+  rel_dir="$(relation_dir_for "$provider_root" "$symbol" "$consumer_root")"
+  record="$rel_dir/relation.txt"
+  if [ ! -f "$record" ]; then
+    printf 'rel:record=missing\n'
+    warn "No stored relationship record for '$symbol' between these two repositories yet; run 'relate' first."
+    return 1
+  fi
+
+  local rec_status rec_provider_commit rec_consumer_commit
+  rec_status="$(read_field "$record" status)"
+  rec_provider_commit="$(read_field "$record" provider_commit)"
+  rec_consumer_commit="$(read_field "$record" consumer_commit)"
+
+  local provider_head consumer_head
+  provider_head="$(git -C "$provider_root" rev-parse HEAD 2>/dev/null || echo none)"
+  consumer_head="$(git -C "$consumer_root" rev-parse HEAD 2>/dev/null || echo none)"
+
+  local provider_state consumer_state overall
+  [ "$rec_provider_commit" = "$provider_head" ] && provider_state="fresh" || provider_state="stale"
+  [ "$rec_consumer_commit" = "$consumer_head" ] && consumer_state="fresh" || consumer_state="stale"
+  if [ "$provider_state" = "fresh" ] && [ "$consumer_state" = "fresh" ]; then
+    overall="fresh"
+  else
+    overall="stale"
+  fi
+
+  printf 'rel:record=found\n'
+  printf 'rel:symbol=%s\n' "$symbol"
+  printf 'rel:status=%s\n' "$rec_status"
+  printf 'rel:provider_repo=%s\n' "$provider_root"
+  printf 'rel:recorded_provider_commit=%s\n' "$rec_provider_commit"
+  printf 'rel:provider_head=%s\n' "$provider_head"
+  printf 'rel:provider_state=%s\n' "$provider_state"
+  printf 'rel:consumer_repo=%s\n' "$consumer_root"
+  printf 'rel:recorded_consumer_commit=%s\n' "$rec_consumer_commit"
+  printf 'rel:consumer_head=%s\n' "$consumer_head"
+  printf 'rel:consumer_state=%s\n' "$consumer_state"
+  printf 'rel:overall=%s\n' "$overall"
+
+  if [ "$overall" = "stale" ]; then
+    warn "Recorded relationship is stale — one or both repositories moved past the recorded commit. Re-run 'relate' to refresh it."
+    return 1
+  fi
+  return 0
+}
+
 cmd_indexer_check() {
   if has_universal_ctags; then
     printf 'ctx:indexer_available=yes\n'
@@ -458,6 +642,12 @@ Usage:
   repo-context.sh rebuild [repo_root] [--force]  Bounded rebuild-or-fallback (force always rebuilds).
   repo-context.sh lookup  <symbol> [repo_root]   Find a symbol's definition/references with evidence.
   repo-context.sh diff    [repo_root]            Show working-tree status/diff overlay only.
+  repo-context.sh relate  <symbol> <provider_repo> <consumer_repo>
+                                                  Check one named symbol for evidence on both sides of
+                                                  two different repositories and record the result.
+  repo-context.sh relate-status <symbol> <provider_repo> <consumer_repo>
+                                                  Report whether a previously recorded relationship is
+                                                  still fresh, without recomputing it.
   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
   repo-context.sh --help
 
@@ -474,6 +664,8 @@ case "$ACTION" in
   rebuild)       cmd_rebuild "${ARGS[@]}" ;;
   lookup)        cmd_lookup "${ARGS[@]}" ;;
   diff)          cmd_diff "${ARGS[@]}" ;;
+  relate)        cmd_relate "${ARGS[@]}" ;;
+  relate-status) cmd_relate_status "${ARGS[@]}" ;;
   indexer-check) cmd_indexer_check ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;

@@ -128,7 +128,12 @@ a bounded rebuild, a forced direct-source fallback clearly labeled as such,
 the file-count and timeout bounds on rebuilding, and a clean failure outside
 a git repository. It passes meaningfully whether or not Universal Ctags is
 actually installed on the machine running it, since it branches on which
-indexer `repo-context.sh` itself reports using.
+indexer `repo-context.sh` itself reports using. It also exercises the
+cross-repository `relate`/`relate-status` commands: a real provider/consumer
+dependency found with evidence on both sides, an unsupported relationship
+reported as unknown rather than invented, a missing relationship record
+reported as such, and the stored record going stale — then being correctly
+updated — once the consumer repo removes the call site.
 
 What neither script *can* confirm is that Kiro itself actually discovers and
 runs a skill, that the real tag-based resolution works against the real
@@ -154,6 +159,12 @@ installed). Once a real tag exists, do this once, manually:
    results.
 4. Publish a second tag, run `agentic-eng update`, confirm it activates, then
    `agentic-eng rollback` and confirm it reverts.
+5. With two unrelated real repositories where one actually calls a function
+   defined in the other, ask Kiro what consumes that function (naming both
+   repos). Confirm it reports `rel:status=supported` with file:line evidence
+   from both repositories. Ask the same question for a symbol that isn't
+   really shared between them and confirm it reports `rel:status=unknown`
+   rather than guessing a relationship.
 
 ## Uninstall
 
