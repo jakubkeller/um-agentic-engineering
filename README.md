@@ -37,9 +37,18 @@ repository — nothing to import or configure per-repo:
   cross-repository question — "what consumes this API?", "does repo B
   still call this function from repo A?" — for one named symbol across two
   given repositories, with source evidence from both sides, reported as
-  `unknown` rather than invented when it isn't actually there.
+  `unknown` rather than invented when it isn't actually there. It also
+  keeps itself current on its own through routine Git activity: install
+  `post-commit`/`post-merge`/`post-checkout` hooks once
+  (`install-hooks`/`hooks-status`) and a bounded, backgrounded refresh
+  runs after commits, merges, and branch switches, so nobody has to
+  remember to rebuild the cache by hand, and it's never a persistent
+  watcher or daemon.
 
-Both skills are read-only. **Unverified:** whether Kiro invokes a skill
+Both skills are read-only (`install-hooks` only ever touches a
+repository's own local, untracked Git hooks, coexisting with any existing
+hook content such as Husky's rather than replacing it). **Unverified:**
+whether Kiro invokes a skill
 purely from conversational phrasing (vs. a typed `/command`) hasn't been
 confirmed against the real IDE from this repo's own dev environment — see
 `docs/SETUP.md`'s Verify section.
@@ -48,7 +57,9 @@ You shouldn't need to discover `repository-context` yourself the first
 time: a steering file (`toolkit/steering/repository-context-awareness.md`)
 tells every agent to notice, once per repository per session, when a repo
 has never been indexed, and index it itself right then with a one-line
-heads-up — rather than waiting to be asked a question that needs it.
+heads-up — rather than waiting to be asked a question that needs it. The
+same moment also installs that repo's Git hooks if they aren't there yet,
+so the cache keeps catching up on its own after that.
 
 ## Layout
 

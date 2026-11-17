@@ -20,6 +20,13 @@
 # invented, and the stored relationship record going stale (and then being
 # updated) once the consumer repo moves past the commit it was recorded at.
 #
+# Also covers Git lifecycle integration (PBI 297791): `install-hooks`,
+# `hooks-status`, `refresh`, and `refresh-async`. The scenarios that need a
+# real committed-change-gets-reindexed demonstration install a fake
+# `ctags` binary ahead of the real `PATH` (the same technique the timeout
+# scenario below already uses) so they're deterministic regardless of
+# whether this machine has Universal Ctags installed.
+#
 # Usage: ./scripts/repo-context-smoke-test.sh
 set -uo pipefail
 
@@ -68,6 +75,46 @@ run() {
 ctx_field() {
   # ctx_field <field> -- reads from $RUN_OUT
   printf '%s' "$RUN_OUT" | grep "^ctx:${1}=" | head -n1 | sed "s/^ctx:${1}=//"
+}
+
+# install_fake_ctags <tooldir>: writes a deterministic fake Universal
+# Ctags into <tooldir>/ctags, matching repo-context.sh's real `-x -L
+# <filelist> -f <outfile>` contract (a real file path, never piped stdin).
+# Finds every `functionName() {`-style line in the files named in the
+# list and emits one ctags -x style record per match.
+install_fake_ctags() {
+  local tooldir="$1"
+  cat > "$tooldir/ctags" <<'FAKECTAGS'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "Universal Ctags 0.0.0 (fixture)"; exit 0; fi
+filelist=""; outfile=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "-L" ] && filelist="$a"
+  [ "$prev" = "-f" ] && outfile="$a"
+  prev="$a"
+done
+: > "$outfile"
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  grep -n "function" "$f" | while IFS=: read -r ln _rest; do
+    name="$(sed -n "${ln}p" "$f" | sed -E 's/^function ([A-Za-z0-9_]+).*/\1/')"
+    printf '%s function %s %s pattern\n' "$name" "$ln" "$f" >> "$outfile"
+  done
+done < "$filelist"
+FAKECTAGS
+  chmod +x "$tooldir/ctags"
+}
+
+# real_hooks_dir_for <repo>: mirrors repo-context.sh's own hooks_dir_for:
+# `git rev-parse --git-path hooks` is relative to the repo root unless
+# core.hooksPath is itself absolute.
+real_hooks_dir_for() {
+  local repo="$1" dir
+  dir="$(cd "$repo" && git rev-parse --git-path hooks)"
+  case "$dir" in
+    /*) printf '%s' "$dir" ;;
+    *)  printf '%s/%s' "$repo" "$dir" ;;
+  esac
 }
 
 cache_dir_for() {
@@ -488,6 +535,143 @@ printf '%s' "$RUN_OUT" | grep -q 'own_state=fresh' \
 printf '%s' "$RUN_OUT" | grep -q 'counterpart_state=stale' \
   && ok "relations-for flags the counterpart repo as stale once it moves past the recorded commit, without recomputing relate" \
   || bad "relations-for did not flag the counterpart as stale: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: install-hooks installs post-commit/post-merge/post-checkout (AC1, AC3) ---"
+#############################################################################
+HOOKREPO1="$(new_tmp_dir)/hookrepo1"
+init_fixture_repo "$HOOKREPO1"
+printf 'x\n' > "$HOOKREPO1/f.sh"
+( cd "$HOOKREPO1" && git add -A && git_q commit -m "initial" )
+HOOKHOME1="$(new_tmp_dir)"
+
+run "$HOOKHOME1" hooks-status "$HOOKREPO1"
+printf '%s' "$RUN_OUT" | grep -q '^hooks:all_installed=no$' \
+  && ok "hooks-status correctly reports nothing installed yet in a fresh repo" \
+  || bad "hooks-status did not report all_installed=no before install: $RUN_OUT"
+
+run "$HOOKHOME1" install-hooks "$HOOKREPO1"
+printf '%s' "$RUN_OUT" | grep -q '^hooks:all_installed=yes$' \
+  && ok "install-hooks reports all three hooks installed" \
+  || bad "install-hooks did not report all_installed=yes: $RUN_OUT"
+HOOKSDIR1="$(real_hooks_dir_for "$HOOKREPO1")"
+for h in post-commit post-merge post-checkout; do
+  [ -x "$HOOKSDIR1/$h" ] \
+    && ok "$h hook file exists and is executable after install-hooks" \
+    || bad "$h hook file missing or not executable after install-hooks"
+done
+
+run "$HOOKHOME1" hooks-status "$HOOKREPO1"
+printf '%s' "$RUN_OUT" | grep -q '^hooks:all_installed=yes$' \
+  && ok "hooks-status (read-only) agrees hooks are installed, without being asked to install anything" \
+  || bad "hooks-status disagreed with install-hooks' own report: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: install-hooks is idempotent, reinstalling never duplicates the managed block ---"
+#############################################################################
+run "$HOOKHOME1" install-hooks "$HOOKREPO1"
+run "$HOOKHOME1" install-hooks "$HOOKREPO1"
+OCCURRENCES="$(grep -c 'um-agentic-engineering repository-context refresh (managed block)' "$HOOKSDIR1/post-commit")"
+[ "$OCCURRENCES" -eq 1 ] \
+  && ok "reinstalling install-hooks twice leaves exactly one managed block in post-commit, not a duplicate" \
+  || bad "expected exactly 1 managed block in post-commit after reinstalling, found $OCCURRENCES"
+
+#############################################################################
+echo "--- scenario: install-hooks coexists with an existing hook instead of overwriting it (implementation scope) ---"
+#############################################################################
+HOOKREPO2="$(new_tmp_dir)/hookrepo2"
+init_fixture_repo "$HOOKREPO2"
+printf 'x\n' > "$HOOKREPO2/f.sh"
+( cd "$HOOKREPO2" && git add -A && git_q commit -m "initial" )
+HOOKHOME2="$(new_tmp_dir)"
+HOOKSDIR2="$(real_hooks_dir_for "$HOOKREPO2")"
+PRE_EXISTING_MARKER="$(new_tmp_dir)/pre-existing-hook-ran"
+cat > "$HOOKSDIR2/post-commit" <<EOF
+#!/usr/bin/env sh
+echo ran >> "$PRE_EXISTING_MARKER"
+EOF
+chmod +x "$HOOKSDIR2/post-commit"
+
+run "$HOOKHOME2" install-hooks "$HOOKREPO2"
+grep -q 'echo ran >>' "$HOOKSDIR2/post-commit" \
+  && ok "install-hooks preserves the pre-existing hook's own content instead of replacing it" \
+  || bad "install-hooks discarded the pre-existing post-commit hook's content"
+grep -q 'um-agentic-engineering repository-context refresh' "$HOOKSDIR2/post-commit" \
+  && ok "install-hooks adds its own managed block alongside the pre-existing hook content" \
+  || bad "install-hooks did not add its managed block to the existing post-commit hook"
+
+( cd "$HOOKREPO2" && echo y2 >> f.sh && git add -A && AGENTIC_TOOLKIT_HOME="$HOOKHOME2" git_q commit -m "second commit" )
+for i in $(seq 1 20); do [ -f "$PRE_EXISTING_MARKER" ] && break; sleep 0.2; done
+[ -f "$PRE_EXISTING_MARKER" ] \
+  && ok "the pre-existing hook still actually runs on a real commit after install-hooks ran alongside it" \
+  || bad "the pre-existing hook did not run after install-hooks coexisted with it"
+
+#############################################################################
+echo "--- scenario: a real commit stays fast even with the refresh hook installed (AC3: never blocks Git) ---"
+#############################################################################
+START_COMMIT_TIME="$(date +%s)"
+( cd "$HOOKREPO2" && echo y3 >> f.sh && git add -A && AGENTIC_TOOLKIT_HOME="$HOOKHOME2" git_q commit -m "third commit" )
+COMMIT_ELAPSED=$(( $(date +%s) - START_COMMIT_TIME ))
+[ "$COMMIT_ELAPSED" -lt 10 ] \
+  && ok "git commit returns quickly; it does not wait on the backgrounded refresh (${COMMIT_ELAPSED}s)" \
+  || bad "git commit took suspiciously long with the refresh hook installed (${COMMIT_ELAPSED}s)"
+
+#############################################################################
+echo "--- scenario: refresh-async never fails, even against a path that isn't a Git repository ---"
+#############################################################################
+NOTAREPO="$(new_tmp_dir)/not-a-repo"
+mkdir -p "$NOTAREPO"
+run "$(new_tmp_dir)" refresh-async "$NOTAREPO"
+[ "$RUN_EXIT" -eq 0 ] \
+  && ok "refresh-async exits 0 even when given a non-Git path, so a hook can never fail a Git operation on it" \
+  || bad "refresh-async exited $RUN_EXIT for a non-Git path: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: a committed symbol move is reflected automatically via the installed hook, with no manual rebuild (AC1, AC2, AC5 demo) ---"
+#############################################################################
+TOOLDIR="$(new_tmp_dir)"
+install_fake_ctags "$TOOLDIR"
+
+DEMOREPO="$(new_tmp_dir)/demorepo"
+init_fixture_repo "$DEMOREPO"
+printf 'function demo_target() {\n  echo "v1"\n}\n' > "$DEMOREPO/a.sh"
+( cd "$DEMOREPO" && git add -A && git_q commit -m "initial" )
+DEMOHOME="$(new_tmp_dir)"
+
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$DEMOHOME" bash "$REPO_CTX" install-hooks "$DEMOREPO" >/dev/null 2>&1
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$DEMOHOME" bash "$REPO_CTX" rebuild "$DEMOREPO" >/dev/null 2>&1
+
+RUN_OUT="$(PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$DEMOHOME" bash "$REPO_CTX" lookup demo_target "$DEMOREPO" 2>&1)"
+printf '%s' "$RUN_OUT" | grep -q 'file=a.sh line=1 source=index confidence=confirmed' \
+  && ok "before the change: confirmed hit at the original line" \
+  || bad "did not get the expected pre-change confirmed hit: $RUN_OUT"
+
+printf '\nfunction demo_target() {\n  echo "v2"\n}\n' >> "$DEMOREPO/a.sh"
+( cd "$DEMOREPO" && git add -A && AGENTIC_TOOLKIT_HOME="$DEMOHOME" PATH="$TOOLDIR:$PATH" git_q commit -m "move demo_target" )
+NEW_HEAD="$(cd "$DEMOREPO" && git rev-parse HEAD)"
+
+REFRESHED=0
+for i in $(seq 1 30); do
+  STATUS_OUT="$(PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$DEMOHOME" bash "$REPO_CTX" status "$DEMOREPO" 2>&1)"
+  if printf '%s' "$STATUS_OUT" | grep -q "ctx:indexed_commit=$NEW_HEAD"; then REFRESHED=1; break; fi
+  sleep 0.3
+done
+[ "$REFRESHED" -eq 1 ] \
+  && ok "the post-commit hook refreshed the cache to the new commit automatically, with nobody running rebuild by hand" \
+  || bad "the cache was never refreshed to the new commit after the hook-triggering commit: $STATUS_OUT"
+
+RUN_OUT="$(PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$DEMOHOME" bash "$REPO_CTX" lookup demo_target "$DEMOREPO" 2>&1)"
+printf '%s' "$RUN_OUT" | grep -q 'file=a.sh line=5 source=index confidence=confirmed' \
+  && ok "after the change: the next grounded query reflects the moved symbol's new location, sourced from the refreshed index" \
+  || bad "lookup after the commit did not reflect the moved symbol from a refreshed index: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: refresh is a no-op when the cache is already fresh (bounded, not a wasted rebuild every time) ---"
+#############################################################################
+RUN_OUT="$(PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$DEMOHOME" bash "$REPO_CTX" refresh "$DEMOREPO" 2>&1)"
+printf '%s' "$RUN_OUT" | grep -q '^ctx:index_state=fresh$' \
+  && ok "refresh reports fresh (no-op) instead of rebuilding when the cache already matches HEAD" \
+  || bad "refresh did not no-op on an already-fresh cache: $RUN_OUT"
 
 echo "----------------------------------------"
 echo "smoke test: $PASS passed, $FAIL failed"

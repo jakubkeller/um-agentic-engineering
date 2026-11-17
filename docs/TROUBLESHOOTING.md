@@ -176,6 +176,43 @@ Delete `toolkit/steering/cross-repo-dependency-awareness.md` from your
 installed release if you'd rather this stayed purely on-demand via
 `relate`/`relate-status`.
 
+## Does `repository-context` keep itself current after I commit, merge, or switch branches?
+
+Yes, once its Git hooks are installed for that repository
+(`repo-context.sh install-hooks <repo-root>`, or let the
+`repository-context-awareness` steering file do it the first time it
+works in that repo this session). A `post-commit`/`post-merge`/
+`post-checkout` hook then triggers a bounded, backgrounded `refresh` after
+each of those events, so the next question usually finds the cache
+already caught up instead of relying on someone remembering to run
+`rebuild --force`. It's never a persistent watcher or daemon: each hook
+fires a one-shot background job tied to that one Git event, and a failed
+or still-running refresh never blocks or fails the Git operation that
+triggered it. Check what's currently installed, read-only, with
+`repo-context.sh hooks-status <repo-root>`.
+
+## I already have Git hooks (Husky or otherwise); will installing these clobber them?
+
+No. `install-hooks` inserts one small, clearly marked block into each
+hook file instead of replacing it, right after the shebang line so it
+always runs first regardless of what the rest of the hook does afterward
+(including an early `exit`), and it honors `core.hooksPath` so it lands in
+the same place Husky itself does rather than in `.git/hooks` if Husky has
+redirected that. Running `install-hooks` again replaces only that one
+block; everything else in the hook file is left exactly as it was.
+
+## Why isn't my stale cache refreshed immediately after I commit?
+
+The refresh runs in the background and is bounded (the same file-count
+and timeout caps as any other rebuild), so it can take a moment on a
+larger repository; the commit itself never waits on it. If you need
+current results before that background job lands, the per-query
+freshness check still applies: a query against a cache that hasn't caught
+up yet reports `ctx:index_state=stale-by-revision` rather than silently
+presenting old results as current. Run `repo-context.sh refresh
+<repo-root>` directly if you want to force it synchronously instead of
+waiting.
+
 ## Why doesn't `toolkit/agents/` install anything?
 
 Kiro's docs explicitly confirm global discovery paths for skills

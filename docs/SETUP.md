@@ -133,15 +133,24 @@ cross-repository `relate`/`relate-status` commands: a real provider/consumer
 dependency found with evidence on both sides, an unsupported relationship
 reported as unknown rather than invented, a missing relationship record
 reported as such, and the stored record going stale — then being correctly
-updated — once the consumer repo removes the call site.
+updated — once the consumer repo removes the call site. It also exercises
+Git lifecycle integration: installing the `post-commit`/`post-merge`/
+`post-checkout` hooks and a read-only status check agreeing with it,
+reinstalling never duplicating the managed block, coexisting with a
+pre-existing hook (preserving its content and confirming it still actually
+runs), a real commit staying fast with the hook installed, `refresh-async`
+never failing even against a non-Git path, a committed symbol move being
+picked up automatically by the installed hook with nobody running
+`rebuild` by hand, and `refresh` correctly no-op'ing when the cache is
+already current.
 
 What neither script *can* confirm is that Kiro itself actually discovers and
 runs a skill, that the real tag-based resolution works against the real
 GitHub remote, or that `repo-context.sh`'s Universal Ctags invocation (`ctags
--x -L -`) behaves exactly as expected against a real Universal Ctags binary
-rather than a hand-crafted fixture — all three require things this repo's
-own dev environment doesn't have (the real IDE/remote, or Universal Ctags
-installed). Once a real tag exists, do this once, manually:
+-x -L <filelist>`) behaves exactly as expected against a real Universal
+Ctags binary rather than a hand-crafted fixture — all three require things
+this repo's own dev environment doesn't have (the real IDE/remote, or
+Universal Ctags installed). Once a real tag exists, do this once, manually:
 
 1. From a fresh clone, run `./install.sh`. Confirm `agentic-eng` lands on
    your PATH per the printed instructions.
@@ -165,6 +174,15 @@ installed). Once a real tag exists, do this once, manually:
    from both repositories. Ask the same question for a symbol that isn't
    really shared between them and confirm it reports `rel:status=unknown`
    rather than guessing a relationship.
+6. In a real repository with Universal Ctags installed, run
+   `repo-context.sh install-hooks` (or let the steering file do it the
+   first time you work in that repo), confirm a result is
+   `confidence=confirmed`, then rename or move a function and commit.
+   Without running `rebuild` yourself, ask the same symbol question again
+   a moment later and confirm it reflects the new location, sourced from
+   the index, not just the always-on diff overlay. If that repo already
+   has its own Git hooks (Husky or otherwise), confirm they still run
+   afterward too.
 
 ## Uninstall
 

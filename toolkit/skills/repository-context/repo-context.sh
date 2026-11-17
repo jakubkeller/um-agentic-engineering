@@ -24,9 +24,28 @@
 #                                                   existing confirmed dependency on its own, instead of
 #                                                   requiring the engineer to think to ask about it.
 #   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
+#   repo-context.sh refresh       [repo_root]      Bounded rebuild only if the cache isn't already fresh (no-op otherwise).
+#   repo-context.sh refresh-async [repo_root]      Fire-and-forget `refresh`: returns immediately, never fails.
+#   repo-context.sh install-hooks [repo_root]      Install post-commit/post-merge/post-checkout Git hooks that
+#                                                   call `refresh-async` after routine Git changes. Coexists with
+#                                                   any existing hook content (Husky included) instead of
+#                                                   replacing it, and is safe to run again (replaces only its
+#                                                   own previously-installed block).
+#   repo-context.sh hooks-status  [repo_root]      Report which of those hooks are currently installed (read-only).
 #   repo-context.sh --help
 #
 # repo_root defaults to the git repo enclosing the current directory.
+#
+# Git lifecycle integration (`install-hooks`): a post-commit/post-merge/
+# post-checkout hook triggers a bounded, backgrounded `refresh` so the cache
+# catches up after routine commits, merges, and branch switches without
+# anyone having to remember to run `rebuild --force` by hand. This is a
+# one-shot background job per Git event, never a persistent watcher or
+# daemon, and it always exits 0 from the hook's perspective: a failed or
+# still-running refresh never blocks or fails the Git operation that
+# triggered it. The per-query freshness check (`ctx:index_state`) remains
+# the correctness backstop regardless of whether hooks are installed or a
+# refresh is still in flight.
 #
 # Indexing: shells out to Universal Ctags when positively detected (not just
 # "something named ctags is on PATH" — macOS ships a BSD ctags under that
@@ -56,6 +75,10 @@ RELATION_SCHEMA_VERSION=1
 DEFAULT_MAX_FILES=20000
 DEFAULT_TIMEOUT=15
 
+HOOK_NAMES="post-commit post-merge post-checkout"
+HOOK_MARK_BEGIN='# >>> um-agentic-engineering repository-context refresh (managed block) >>>'
+HOOK_MARK_END='# <<< um-agentic-engineering repository-context refresh <<<'
+
 info() { printf '==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -66,6 +89,12 @@ digest_string() {
   else
     printf '%s' "$1" | sha256sum | awk '{print $1}'
   fi
+}
+
+# shell_quote <string>: shell-escapes a string for safe embedding inside a
+# generated hook file (paths with spaces or quotes included).
+shell_quote() {
+  printf '%q' "$1"
 }
 
 cache_home() {
@@ -100,6 +129,19 @@ repo_identity() {
 
 cache_key() { digest_string "$(repo_identity "$1")"; }
 cache_dir_for() { printf '%s/%s' "$(cache_home)" "$(cache_key "$1")"; }
+
+# hooks_dir_for <root>: the Git hooks directory that actually takes effect
+# for this repo, honoring `core.hooksPath` (e.g. Husky v7+ redirects this to
+# its own `.husky/` directory) instead of assuming `.git/hooks`.
+hooks_dir_for() {
+  local root="$1" dir
+  dir="$(git -C "$root" rev-parse --git-path hooks 2>/dev/null)" || return 1
+  [ -n "$dir" ] || return 1
+  case "$dir" in
+    /*) printf '%s' "$dir" ;;
+    *)  printf '%s/%s' "$root" "$dir" ;;
+  esac
+}
 
 read_field() {
   local file="$1" key="$2" line
@@ -246,13 +288,29 @@ build_index() {
     return 0
   }
 
-  if ! ( cd "$root" && candidate_files "$root" | run_with_timeout "$timeout" ctags -x -L - -f "$staging/symbols.idx" ) \
-     || [ ! -f "$staging/symbols.idx" ]; then
+  # Materialize the candidate file list to a real file before handing it to
+  # the bounded/timed indexer, instead of streaming it through a pipe into
+  # `run_with_timeout`'s backgrounded job: piping into a backgrounded
+  # reader can race and silently lose the whole list if it takes any
+  # measurable time to produce, independent of which indexer reads it.
+  local filelist
+  filelist="$(mktemp "$(cache_home)/.filelist.XXXXXX")" || {
     rm -rf "$staging"
     BUILD_OK=0
     BUILD_REASON="rebuild-failed"
     return 0
+  }
+  candidate_files "$root" > "$filelist"
+
+  if ! ( cd "$root" && run_with_timeout "$timeout" ctags -x -L "$filelist" -f "$staging/symbols.idx" ) \
+     || [ ! -f "$staging/symbols.idx" ]; then
+    rm -rf "$staging"
+    rm -f "$filelist"
+    BUILD_OK=0
+    BUILD_REASON="rebuild-failed"
+    return 0
   fi
+  rm -f "$filelist"
 
   local symbol_count version
   symbol_count="$(wc -l < "$staging/symbols.idx" | tr -d ' ')"
@@ -488,6 +546,42 @@ cmd_rebuild() {
   return 0
 }
 
+# cmd_refresh: a bounded, synchronous rebuild, but only when the cache
+# genuinely isn't fresh (STALE_REVISION/MISSING/CORRUPT); a no-op when it's
+# already FRESH. This is what Git hooks trigger (via `refresh-async`) after
+# a commit, merge, or branch switch, and it's also safe to run directly.
+cmd_refresh() {
+  local root
+  root="$(resolve_root_or_fail "${1:-}")" || exit 1
+  local cache_dir
+  cache_dir="$(cache_dir_for "$root")"
+  determine_state "$root" "$cache_dir"
+  local force=0
+  case "$STATE" in
+    MISSING|CORRUPT|STALE_REVISION) force=1 ;;
+  esac
+  ensure_fresh_or_fallback "$root" "$cache_dir" "$force"
+  local rc=$?
+  print_ctx_header "$root"
+  [ "$rc" -ne 0 ] && return 1
+  [ "$EFF_STATE" = "fallback" ] && return 1
+  return 0
+}
+
+# cmd_refresh_async: fires `refresh` in the background and returns
+# immediately, regardless of outcome. This is the only thing a Git hook
+# ever calls directly: it must never make the hook wait on a rebuild, and
+# it must never fail the Git operation that triggered it, so every failure
+# path here is swallowed rather than propagated.
+cmd_refresh_async() {
+  local root
+  root="$(resolve_root_or_fail "${1:-}")" || return 0
+  local self
+  self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+  nohup bash "$self" refresh "$root" >/dev/null 2>&1 &
+  return 0
+}
+
 cmd_lookup() {
   local symbol="${1:-}" root_arg="${2:-}"
   [ -n "$symbol" ] || fail "Usage: repo-context.sh lookup <symbol> [repo_root]"
@@ -681,6 +775,90 @@ cmd_relations_for() {
   printf 'rel:count=%s\n' "$count"
 }
 
+# hook_block <script_path> <root>: the managed shell snippet installed
+# into each Git hook file. It only ever triggers `refresh-async` (never
+# blocks, never fails) and ends in `true` so the managed block's own exit
+# status can never affect the rest of the hook file, whatever shell runs it.
+hook_block() {
+  local script_path="$1" root="$2"
+  printf '%s\n' "$HOOK_MARK_BEGIN"
+  printf '# Triggers a bounded, backgrounded repository-context refresh.\n'
+  printf '# Returns immediately either way; never fails this Git operation.\n'
+  printf 'command -v bash >/dev/null 2>&1 && bash %s refresh-async %s >/dev/null 2>&1\n' \
+    "$(shell_quote "$script_path")" "$(shell_quote "$root")"
+  printf 'true\n'
+  printf '%s\n' "$HOOK_MARK_END"
+}
+
+# install_one_hook <hook_file> <block>: installs/replaces only the
+# managed block, inserted right after any existing shebang line so it
+# always runs regardless of what the rest of an existing hook (Husky's
+# included) does afterward, including an early `exit`. Never touches any
+# other line of an existing hook file.
+install_one_hook() {
+  local hook_file="$1" block="$2"
+  if [ -f "$hook_file" ]; then
+    local tmp
+    tmp="$(mktemp "${hook_file}.XXXXXX")" || return 1
+    awk -v begin="$HOOK_MARK_BEGIN" -v end="$HOOK_MARK_END" '
+      $0==begin {skip=1; next}
+      $0==end {skip=0; next}
+      skip {next}
+      {print}
+    ' "$hook_file" > "$tmp"
+
+    local first_line
+    first_line="$(head -n1 "$tmp")"
+    if printf '%s' "$first_line" | grep -q '^#!'; then
+      { printf '%s\n' "$first_line"; printf '%s\n' "$block"; tail -n +2 "$tmp"; } > "$hook_file"
+    else
+      { printf '%s\n' "$block"; cat "$tmp"; } > "$hook_file"
+    fi
+    rm -f "$tmp"
+  else
+    { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$block"; } > "$hook_file"
+  fi
+  chmod +x "$hook_file"
+}
+
+cmd_install_hooks() {
+  local root
+  root="$(resolve_root_or_fail "${1:-}")" || exit 1
+  local hooks_dir
+  hooks_dir="$(hooks_dir_for "$root")" || fail "Could not resolve the Git hooks directory for $root"
+  mkdir -p "$hooks_dir"
+
+  local self
+  self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+  local block
+  block="$(hook_block "$self" "$root")"
+
+  local h
+  for h in $HOOK_NAMES; do
+    install_one_hook "$hooks_dir/$h" "$block"
+  done
+  cmd_hooks_status "$root"
+}
+
+cmd_hooks_status() {
+  local root
+  root="$(resolve_root_or_fail "${1:-}")" || exit 1
+  local hooks_dir
+  hooks_dir="$(hooks_dir_for "$root")" || fail "Could not resolve the Git hooks directory for $root"
+  printf 'hooks:dir=%s\n' "$hooks_dir"
+
+  local h all_installed=yes
+  for h in $HOOK_NAMES; do
+    if [ -f "$hooks_dir/$h" ] && grep -qF "$HOOK_MARK_BEGIN" "$hooks_dir/$h" 2>/dev/null; then
+      printf 'hooks:%s=installed\n' "$h"
+    else
+      printf 'hooks:%s=missing\n' "$h"
+      all_installed=no
+    fi
+  done
+  printf 'hooks:all_installed=%s\n' "$all_installed"
+}
+
 cmd_indexer_check() {
   if has_universal_ctags; then
     printf 'ctx:indexer_available=yes\n'
@@ -723,6 +901,11 @@ Usage:
                                                   List every previously recorded relationship involving
                                                   this repo, optionally filtered to one symbol.
   repo-context.sh indexer-check                  Report whether Universal Ctags is available (no repo needed).
+  repo-context.sh refresh       [repo_root]      Bounded rebuild only if the cache isn't already fresh.
+  repo-context.sh refresh-async [repo_root]      Fire-and-forget refresh: returns immediately, never fails.
+  repo-context.sh install-hooks [repo_root]      Install Git hooks that call refresh-async after commits,
+                                                  merges, and branch switches. Coexists with existing hooks.
+  repo-context.sh hooks-status  [repo_root]      Report which of those hooks are installed (read-only).
   repo-context.sh --help
 
 repo_root defaults to the git repo enclosing the current directory.
@@ -742,6 +925,10 @@ case "$ACTION" in
   relate-status) cmd_relate_status "${ARGS[@]}" ;;
   relations-for) cmd_relations_for "${ARGS[@]}" ;;
   indexer-check) cmd_indexer_check ;;
+  refresh)       cmd_refresh "${ARGS[@]}" ;;
+  refresh-async) cmd_refresh_async "${ARGS[@]}" ;;
+  install-hooks) cmd_install_hooks "${ARGS[@]}" ;;
+  hooks-status)  cmd_hooks_status "${ARGS[@]}" ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;
 esac
