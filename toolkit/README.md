@@ -23,7 +23,12 @@ onto a workstation.
   organization-wide discovery). `relations-for` then lists every such
   confirmed relationship a given repository is already part of, which is
   what lets an agent notice a known dependency on its own instead of
-  needing to be asked. A
+  needing to be asked. The same skill also keeps itself current through
+  routine Git activity via `install-hooks`/`hooks-status`: a
+  `post-commit`/`post-merge`/`post-checkout` hook triggers a bounded,
+  backgrounded `refresh` (never a watcher or daemon) so the cache doesn't
+  go stale between questions, coexisting with any existing hook content
+  (Husky included) instead of overwriting it. A
   skill's folder may also hold a companion deterministic script alongside
   its `SKILL.md` (see `repository-context/repo-context.sh`) when its logic
   needs to be testable, not just prose a Kiro agent follows — `agentic-eng`
@@ -38,7 +43,9 @@ onto a workstation.
   (`inclusion: always`), which tells every agent to check, once per
   repository per session, whether that repository has ever been indexed by
   `repository-context` and, if not, index it itself right then rather
-  than waiting to be asked; it also checks once per session (workstation
+  than waiting to be asked, and whether that repository's Git hooks already
+  keep the cache current and, if not, installs them itself in the same
+  moment; it also checks once per session (workstation
   level, not per-repo) whether Universal Ctags is installed at all and, if
   not, states the exact install command up front rather than only
   reporting that results are degraded. Also contains

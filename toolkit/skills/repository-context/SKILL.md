@@ -3,7 +3,7 @@ name: repository-context
 description: Use when a question needs a specific symbol, file, or code-path location in the current repository with verifiable evidence, e.g. "where is X defined", "what calls Y", "show me the function for Z", "is this file:line still accurate". Also use when checking whether one repository actually depends on another through a named contract, e.g. "what consumes this API", "does repo B still call this function from repo A". Returns file:line evidence, the repository's current revision, and flags stale or uncommitted context rather than silently trusting a cache.
 metadata:
   author: um-agentic-engineering
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 # Repository Context
@@ -153,6 +153,52 @@ the primary way this reaches the engineer.
    this?" for a relationship that's already been confirmed once: you tell
    them outright, unprompted.
 
+## Staying current through routine Git changes
+
+The cached index can go stale the moment someone commits, merges, or
+switches branches: `lookup`/`diff`/`relate` already detect and report that
+(`ctx:index_state=stale-by-revision`) rather than silently trusting an old
+cache, but by default nothing proactively fixes it until someone next asks
+a question. Install Git hooks once per repository so that routine Git
+activity keeps the cache caught up on its own, without anyone having to
+remember to run `rebuild --force`:
+
+```
+bash <that-dir>/repo-context.sh install-hooks "<repo-root>"
+```
+
+This installs a `post-commit`, `post-merge`, and `post-checkout` hook (so
+commits, merges, and branch switches are all covered). Each hook only ever
+triggers a bounded, backgrounded refresh and returns immediately: it never
+blocks the Git operation that triggered it, and a failed or still-running
+refresh never fails that operation either. It is never a persistent
+watcher or daemon; it's a one-shot background job per Git event. Installing
+is additive and idempotent: it inserts a clearly marked block into any
+existing hook file (Husky-managed hooks included) instead of overwriting
+it, re-running it replaces only that block, and it honors
+`core.hooksPath` so it lands in the same place Husky itself does.
+
+Check what's currently installed (read-only, installs nothing) with:
+
+```
+bash <that-dir>/repo-context.sh hooks-status "<repo-root>"
+```
+
+To trigger the same bounded refresh directly, without waiting on a hook,
+use `refresh` (synchronous; only rebuilds when the cache genuinely isn't
+fresh, a no-op otherwise) or `refresh-async` (fires `refresh` in the
+background and returns immediately, the same thing a hook calls):
+
+```
+bash <that-dir>/repo-context.sh refresh       "<repo-root>"
+bash <that-dir>/repo-context.sh refresh-async "<repo-root>"
+```
+
+Per-query freshness checking (`ctx:index_state`) remains the correctness
+backstop regardless: hooks make a stale cache rarer, they don't make the
+staleness check unnecessary, so still report `stale-by-revision` plainly
+if you ever see it rather than assuming hooks always already caught it.
+
 ## Notes
 
 - This skill is installed globally (`~/.kiro/skills/repository-context/`)
@@ -171,4 +217,5 @@ the primary way this reaches the engineer.
   daemon, or file watcher involved.
 - Run `bash <that-dir>/repo-context.sh --help` for the full command
   surface (`status`, `rebuild`, `lookup`, `diff`, `relate`,
-  `relate-status`, `relations-for`).
+  `relate-status`, `relations-for`, `refresh`, `refresh-async`,
+  `install-hooks`, `hooks-status`).

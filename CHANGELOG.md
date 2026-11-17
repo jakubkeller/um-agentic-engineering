@@ -3,7 +3,8 @@
 Nothing in this repo has been tagged/released yet — there is no approved
 `vX.Y.Z` release, so there's no version number to attach to any of this
 until a maintainer cuts the first one. Everything below is accumulated,
-unreleased work (PBI 297784 + PBI 297785 + PBI 297787 + PBI 297793).
+unreleased work (PBI 297784 + PBI 297785 + PBI 297787 + PBI 297793 + PBI
+297791).
 
 ## Unreleased
 
@@ -137,3 +138,50 @@ unreleased work (PBI 297784 + PBI 297785 + PBI 297787 + PBI 297793).
   `count=0` for a repo that's never been part of one, and flagging a
   counterpart repo as stale once it moves on without needing `relate`
   re-run.
+- New `repo-context.sh refresh`/`refresh-async`/`install-hooks`/
+  `hooks-status` subcommands (PBI 297791): `refresh` reruns the bounded
+  rebuild only when the cache genuinely isn't fresh (a no-op otherwise);
+  `refresh-async` fires `refresh` in the background and returns
+  immediately regardless of outcome, which is the only thing a Git hook
+  ever calls. `install-hooks` installs a `post-commit`/`post-merge`/
+  `post-checkout` hook in the repository's actual effective hooks
+  directory (honoring `core.hooksPath`, so it lands next to Husky's own
+  hooks when Husky manages that setting) that triggers `refresh-async`
+  after routine commits, merges, and branch switches, so the cache catches
+  up on its own without anyone having to remember to run
+  `rebuild --force`. Installing is additive and idempotent: it inserts a
+  single clearly marked, removable block into any existing hook file
+  instead of overwriting it, coexisting with Husky or any other hook
+  content rather than replacing it, and reinstalling only ever replaces
+  that one block. The hook itself always exits successfully regardless of
+  the refresh's own outcome, so a failed or still-running refresh never
+  blocks or fails the Git operation that triggered it, and this is never a
+  persistent watcher or daemon: just a bounded, one-shot background job
+  per Git event. `hooks-status` reports which of the three hooks are
+  currently installed, read-only. The per-query freshness check
+  (`ctx:index_state=stale-by-revision`) from PBI 297787 remains the
+  correctness backstop either way.
+- Fixed a pre-existing race in `build_index`'s bounded-rebuild path:
+  streaming the candidate file list through a pipe into
+  `run_with_timeout`'s backgrounded indexer process could lose the entire
+  list (and silently fall back) whenever producing that list took any
+  measurable time, independent of which indexer actually read it. The file
+  list is now materialized to a real temporary file first and handed to
+  the indexer by path instead of by pipe, which this PBI's automatic,
+  much-more-frequent background refreshes made far more likely to surface
+  than the previous on-demand-only `rebuild`.
+- Extended `repository-context-awareness.md` (`inclusion: always`) so
+  that, in the same first-time-per-repository moment it checks whether a
+  repository has ever been indexed, it also checks `hooks-status` and, if
+  nothing is installed yet, runs `install-hooks` itself, mentioning it in
+  the same one-line note rather than leaving the engineer to discover and
+  run `install-hooks` on their own.
+- `scripts/repo-context-smoke-test.sh` extended with Git lifecycle
+  scenarios: installing all three hooks and a read-only status check
+  agreeing with it, idempotent reinstall never duplicating the managed
+  block, coexisting with a pre-existing hook (preserving its content and
+  confirming it still actually runs), a real commit staying fast with the
+  hook installed, `refresh-async` never failing even against a
+  non-Git path, a committed symbol move being picked up automatically by
+  the installed hook with nobody running `rebuild` by hand, and `refresh`
+  correctly no-op'ing when the cache is already current.

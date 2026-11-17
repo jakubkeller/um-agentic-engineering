@@ -60,7 +60,29 @@ session):
    itself whenever it's actually asked a question; they don't need a
    proactive nudge, only "never indexed at all" and "no indexer available
    at all" do.
+5. Also in this same first-time-per-repository moment, check whether this
+   repository already keeps itself current through routine Git activity:
+   ```
+   bash ~/.kiro/skills/repository-context/repo-context.sh hooks-status "<repo-root>"
+   ```
+   If this fails outright, say nothing and skip the rest of this step. If
+   it reports `hooks:all_installed=no`, set it up yourself, right then,
+   without asking first:
+   ```
+   bash ~/.kiro/skills/repository-context/repo-context.sh install-hooks "<repo-root>"
+   ```
+   This only ever installs a small, clearly marked, removable block into
+   the repository's own `post-commit`/`post-merge`/`post-checkout` Git
+   hooks (coexisting with any existing hook content, Husky included) that
+   triggers a bounded, backgrounded cache refresh after routine commits,
+   merges, and branch switches (never a watcher or daemon), and it never
+   blocks or fails a Git operation. Fold this into the same one-line
+   message as step 3 if both apply (e.g. "indexed this repo for the first
+   time and set up automatic refresh after commits/merges/branch switches
+   so it doesn't go stale"), or mention it on its own, once, if step 3
+   didn't apply. Don't mention it again this session for this repository.
 
-This never modifies anything inside the repository being worked in — the
-rebuild only ever writes to its own cache directory under
-`~/.kiro/.um-agentic-engineering/repo-context/`.
+This never modifies anything inside the repository's tracked content:
+the rebuild only ever writes to its own cache directory under
+`~/.kiro/.um-agentic-engineering/repo-context/`, and `install-hooks` only
+ever touches the repository's own local, untracked Git hooks.
