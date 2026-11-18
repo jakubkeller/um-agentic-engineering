@@ -199,6 +199,49 @@ backstop regardless: hooks make a stale cache rarer, they don't make the
 staleness check unnecessary, so still report `stale-by-revision` plainly
 if you ever see it rather than assuming hooks always already caught it.
 
+## Post-merge baseline publication (PBI 297919)
+
+A separate, optional concern from everything above: letting a repository
+publish its already-built index as a retrievable, versioned baseline
+after a merge, so other engineers (or agents) can reuse it instead of
+rebuilding locally. This never introduces new indexing — it only packages
+the exact same cache this skill already builds via `rebuild`/`refresh`.
+
+1. `package` builds that artifact bundle (the cache's `metadata.txt` +
+   `symbols.idx`, plus a `manifest.txt` recording repo identity, the exact
+   commit, schema/indexer version, and a sha256 for every file and the
+   bundle as a whole):
+   ```
+   bash <that-dir>/repo-context.sh package "<repo-root>" "<output-dir>" [--force]
+   ```
+   It refuses, rather than packaging something misleading, if the cache
+   isn't `FRESH` (the indexed commit doesn't match `HEAD` — run
+   `rebuild --force` first) or the working tree is dirty (an artifact must
+   correspond to an exact committed revision, never uncommitted changes).
+   It also refuses to silently overwrite an already-packaged bundle at the
+   same path without `--force`. Critically, it never touches `output-dir`
+   until the new bundle is fully built in a separate staging directory, so
+   a failed `package` call (wrong state, dirty tree, anything) never
+   replaces whatever good artifact was already published there.
+2. `verify` recomputes those checksums against a bundle directory
+   (wherever it was retrieved to) and reports `verify:status=ok` or
+   `verify:status=corrupt`, printing every manifest field either way so
+   the artifact can actually be inspected, not just trusted blindly:
+   ```
+   bash <that-dir>/repo-context.sh verify "<bundle-dir>"
+   ```
+3. This skill and script are deliberately silent on *how* a bundle gets
+   from a CI job to wherever engineers retrieve it from — that depends on
+   which post-merge mechanism and artifact storage a repository's owning
+   team has actually approved (GitHub vs. Azure DevOps, Azure Artifacts vs.
+   something else), which this toolkit cannot assume and must not decide
+   on another team's behalf. See `ci-templates/` at the root of this
+   repository for an Azure Pipelines template that wires `rebuild` →
+   `package` → `verify` → publish together as a reference a real
+   ADO-hosted repository's team can adopt into their own pipeline — it is
+   not executed by this repository's own CI, because this repository has
+   none.
+
 ## Notes
 
 - This skill is installed globally (`~/.kiro/skills/repository-context/`)
@@ -218,4 +261,4 @@ if you ever see it rather than assuming hooks always already caught it.
 - Run `bash <that-dir>/repo-context.sh --help` for the full command
   surface (`status`, `rebuild`, `lookup`, `diff`, `relate`,
   `relate-status`, `relations-for`, `refresh`, `refresh-async`,
-  `install-hooks`, `hooks-status`).
+  `install-hooks`, `hooks-status`, `package`, `verify`).

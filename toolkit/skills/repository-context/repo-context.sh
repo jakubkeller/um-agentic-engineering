@@ -32,6 +32,17 @@
 #                                                   replacing it, and is safe to run again (replaces only its
 #                                                   own previously-installed block).
 #   repo-context.sh hooks-status  [repo_root]      Report which of those hooks are currently installed (read-only).
+#   repo-context.sh package <repo_root> <output_dir> [--force]
+#                                                   Package the already-built index cache (metadata.txt +
+#                                                   symbols.idx) into a versioned, checksummed artifact bundle
+#                                                   tied to the exact current commit. Refuses if the cache isn't
+#                                                   FRESH or the working tree is dirty, and never touches
+#                                                   output_dir until the bundle is fully built in a staging dir,
+#                                                   so a failed package call never replaces a previously
+#                                                   published artifact there.
+#   repo-context.sh verify  <bundle_dir>           Recompute a packaged artifact's per-file and overall sha256
+#                                                   against its manifest.txt and report ok/corrupt, printing the
+#                                                   manifest fields either way so it can be inspected.
 #   repo-context.sh --help
 #
 # repo_root defaults to the git repo enclosing the current directory.
@@ -63,6 +74,15 @@
 # lightweight record (never a graph, never a second indexer) under
 # ${AGENTIC_TOOLKIT_HOME:-$HOME}/.kiro/.um-agentic-engineering/repo-relations/<key>/.
 #
+# Post-merge baseline publication (`package`/`verify`, PBI 297919): `package`
+# does not index anything new — it only packages the cache this script already
+# built (via `rebuild`/`refresh`) into a self-contained, checksummed bundle
+# that an approved CI pipeline can hand to whatever artifact storage it's
+# permitted to use (see ci-templates/ at the repo root for an Azure Pipelines
+# template, not executed from here). `verify` lets anyone who has retrieved a
+# bundle confirm it hasn't been corrupted or tampered with, independent of
+# how it was stored or transported.
+#
 # Env vars:
 #   AGENTIC_TOOLKIT_HOME            Redirect cache under a throwaway home (see scripts/smoke-test.sh's use of the same variable for agentic-eng).
 #   AGENTIC_REPO_CONTEXT_MAX_FILES  Bounded-rebuild file-count cap (default 20000).
@@ -72,6 +92,7 @@ set -uo pipefail
 
 CACHE_SCHEMA_VERSION=1
 RELATION_SCHEMA_VERSION=1
+ARTIFACT_SCHEMA_VERSION=1
 DEFAULT_MAX_FILES=20000
 DEFAULT_TIMEOUT=15
 
@@ -88,6 +109,14 @@ digest_string() {
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
   else
     printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+digest_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
   fi
 }
 
@@ -882,6 +911,170 @@ cmd_diff() {
   diff_overlay "$root" ""
 }
 
+# cmd_package <repo_root> <output_dir> [--force]
+# Packages the ALREADY-BUILT index cache (metadata.txt + symbols.idx; never
+# builds or rebuilds anything itself) into a versioned, integrity-checked
+# artifact bundle at output_dir: repo identity, exact commit, schema/indexer
+# version, and a per-file + overall sha256. Requires the cache to be FRESH
+# (indexed commit == HEAD) and the working tree clean — refuses otherwise,
+# so a published artifact can never be published for the wrong commit.
+# Never partially writes output_dir: builds in a sibling staging dir first
+# and only replaces output_dir on full success, so a failed package call
+# never touches (and never replaces) whatever was already published there.
+cmd_package() {
+  local force=0
+  local positional=()
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --force) force=1 ;;
+      *) positional+=("$a") ;;
+    esac
+  done
+  local root_arg="${positional[0]:-}" out_arg="${positional[1]:-}"
+  if [ -z "$root_arg" ] || [ -z "$out_arg" ]; then
+    fail "Usage: repo-context.sh package <repo_root> <output_dir> [--force]"
+  fi
+
+  local root
+  root="$(resolve_root_or_fail "$root_arg")" || exit 1
+  local cache_dir
+  cache_dir="$(cache_dir_for "$root")"
+  determine_state "$root" "$cache_dir"
+
+  if [ "$STATE" != "FRESH" ]; then
+    warn "Refusing to package: cache state is $STATE, not FRESH. Run 'rebuild --force \"$root\"' against the exact commit being published first."
+    return 1
+  fi
+
+  local dirty="no"
+  [ -n "$(git -C "$root" status --short 2>/dev/null)" ] && dirty="yes"
+  if [ "$dirty" = "yes" ]; then
+    warn "Refusing to package: working tree is dirty. A published artifact must correspond exactly to a committed revision."
+    return 1
+  fi
+
+  if [ -f "$out_arg/manifest.txt" ] && [ "$force" -ne 1 ]; then
+    warn "Refusing to overwrite an already-packaged artifact at $out_arg (pass --force to repackage)."
+    return 1
+  fi
+
+  local commit origin indexer
+  commit="$(git -C "$root" rev-parse HEAD)"
+  origin="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
+  [ -z "$origin" ] && origin="none"
+  indexer="$(read_field "$cache_dir/metadata.txt" indexer)"
+
+  mkdir -p "$(dirname "$out_arg")" || fail "Could not create parent directory for $out_arg"
+  local staging
+  staging="$(mktemp -d "$(dirname "$out_arg")/.pkg-staging.XXXXXX")" \
+    || fail "Could not create a staging directory next to $out_arg"
+
+  local f hash_lines=""
+  local manifest_file_lines=""
+  for f in metadata.txt symbols.idx; do
+    if [ -f "$cache_dir/$f" ]; then
+      cp "$cache_dir/$f" "$staging/$f"
+      local h
+      h="$(digest_file "$staging/$f")"
+      manifest_file_lines="${manifest_file_lines}file_sha256:${f}: ${h}
+"
+      hash_lines="${hash_lines}${f}:${h}
+"
+    fi
+  done
+
+  local bundle_sha256
+  bundle_sha256="$(digest_string "$(printf '%s' "$hash_lines" | LC_ALL=C sort)")"
+
+  {
+    printf 'artifact_schema_version: %s\n' "$ARTIFACT_SCHEMA_VERSION"
+    printf 'repo_origin_url: %s\n' "$origin"
+    printf 'commit: %s\n' "$commit"
+    printf 'indexer: %s\n' "$indexer"
+    printf 'cache_schema_version: %s\n' "$CACHE_SCHEMA_VERSION"
+    printf 'generated_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s' "$manifest_file_lines"
+    printf 'bundle_sha256: %s\n' "$bundle_sha256"
+  } > "$staging/manifest.txt"
+
+  rm -rf "$out_arg"
+  mv "$staging" "$out_arg"
+
+  printf 'pkg:status=ok\n'
+  printf 'pkg:output=%s\n' "$out_arg"
+  printf 'pkg:repo_root=%s\n' "$root"
+  printf 'pkg:commit=%s\n' "$commit"
+  printf 'pkg:indexer=%s\n' "$indexer"
+  printf 'pkg:bundle_sha256=%s\n' "$bundle_sha256"
+  return 0
+}
+
+# cmd_verify <bundle_dir>
+# Recomputes every file's sha256 and the overall bundle_sha256 from a
+# packaged artifact directory and compares them to what manifest.txt
+# claims, so an engineer (or a pipeline, before/after retrieval) can
+# actually confirm an artifact wasn't corrupted or tampered with rather
+# than trusting the manifest blindly. Prints the manifest fields either
+# way so the artifact can be inspected even when verification fails.
+cmd_verify() {
+  local bundle_dir="${1:-}"
+  [ -n "$bundle_dir" ] || fail "Usage: repo-context.sh verify <bundle_dir>"
+  local manifest="$bundle_dir/manifest.txt"
+  if [ ! -f "$manifest" ]; then
+    printf 'verify:status=missing-manifest\n'
+    warn "No manifest.txt found at $bundle_dir; this does not look like a repository-context published artifact."
+    return 1
+  fi
+
+  local ok=1 line f recorded actual hash_lines=""
+  while IFS= read -r line; do
+    case "$line" in
+      file_sha256:*)
+        f="${line#file_sha256:}"
+        f="${f%%:*}"
+        recorded="${line#file_sha256:${f}: }"
+        hash_lines="${hash_lines}${f}:${recorded}
+"
+        if [ ! -f "$bundle_dir/$f" ]; then
+          warn "Missing file listed in manifest: $f"
+          ok=0
+          continue
+        fi
+        actual="$(digest_file "$bundle_dir/$f")"
+        if [ "$actual" != "$recorded" ]; then
+          warn "Checksum mismatch for $f: manifest says $recorded, actual file hash is $actual"
+          ok=0
+        fi
+        ;;
+    esac
+  done < "$manifest"
+
+  local recorded_bundle_sha256 recomputed_bundle_sha256
+  recorded_bundle_sha256="$(read_field "$manifest" bundle_sha256)"
+  recomputed_bundle_sha256="$(digest_string "$(printf '%s' "$hash_lines" | LC_ALL=C sort)")"
+  if [ "$recomputed_bundle_sha256" != "$recorded_bundle_sha256" ]; then
+    warn "bundle_sha256 in manifest does not match its own recorded per-file hashes; the manifest may have been tampered with."
+    ok=0
+  fi
+
+  printf 'verify:artifact_schema_version=%s\n' "$(read_field "$manifest" artifact_schema_version)"
+  printf 'verify:repo_origin_url=%s\n' "$(read_field "$manifest" repo_origin_url)"
+  printf 'verify:commit=%s\n' "$(read_field "$manifest" commit)"
+  printf 'verify:indexer=%s\n' "$(read_field "$manifest" indexer)"
+  printf 'verify:cache_schema_version=%s\n' "$(read_field "$manifest" cache_schema_version)"
+  printf 'verify:generated_at=%s\n' "$(read_field "$manifest" generated_at)"
+  printf 'verify:bundle_sha256=%s\n' "$recorded_bundle_sha256"
+
+  if [ "$ok" -eq 1 ]; then
+    printf 'verify:status=ok\n'
+    return 0
+  else
+    printf 'verify:status=corrupt\n'
+    return 1
+  fi
+}
+
 show_help() {
   cat <<'EOF'
 repo-context.sh — source-grounded repository symbol/reference lookup
@@ -906,6 +1099,12 @@ Usage:
   repo-context.sh install-hooks [repo_root]      Install Git hooks that call refresh-async after commits,
                                                   merges, and branch switches. Coexists with existing hooks.
   repo-context.sh hooks-status  [repo_root]      Report which of those hooks are installed (read-only).
+  repo-context.sh package <repo_root> <output_dir> [--force]
+                                                  Package the already-built index cache into a versioned,
+                                                  checksummed artifact bundle for the current commit. Refuses
+                                                  if the cache isn't FRESH or the working tree is dirty.
+  repo-context.sh verify  <bundle_dir>           Recompute and check a packaged artifact's checksums; prints
+                                                  its manifest fields either way (repo/commit/schema/indexer).
   repo-context.sh --help
 
 repo_root defaults to the git repo enclosing the current directory.
@@ -929,6 +1128,8 @@ case "$ACTION" in
   refresh-async) cmd_refresh_async "${ARGS[@]}" ;;
   install-hooks) cmd_install_hooks "${ARGS[@]}" ;;
   hooks-status)  cmd_hooks_status "${ARGS[@]}" ;;
+  package)       cmd_package "${ARGS[@]}" ;;
+  verify)        cmd_verify "${ARGS[@]}" ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;
 esac
