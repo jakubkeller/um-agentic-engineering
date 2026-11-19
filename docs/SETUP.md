@@ -161,13 +161,18 @@ picked up automatically by the installed hook with nobody running
 `rebuild` by hand, and `refresh` correctly no-op'ing when the cache is
 already current.
 
-What neither script *can* confirm is that Kiro itself actually discovers and
-runs a skill, that the real tag-based resolution works against the real
-GitHub remote, or that `repo-context.sh`'s Universal Ctags invocation (`ctags
--x -L <filelist>`) behaves exactly as expected against a real Universal
-Ctags binary rather than a hand-crafted fixture — all three require things
-this repo's own dev environment doesn't have (the real IDE/remote, or
-Universal Ctags installed). Once a real tag exists, do this once, manually:
+Two things once listed here as unverified are now confirmed directly,
+against the real thing, not a fixture: `repo-context.sh`'s Universal Ctags
+invocation (`ctags -x -L <filelist>`) was run against a real Universal
+Ctags binary and returned correct, confirmed results; and Kiro does
+discover and run this skill, but only via the explicit `/repository-context`
+command, never from plain conversational phrasing, which was tried
+against the real IDE and did not invoke it (it answered by grepping
+instead, with no file:line evidence). The README reflects this.
+
+What neither script *can* confirm is that the real tag-based resolution
+works against the real GitHub remote, since that requires the real remote,
+which this repo's own dev environment doesn't have. Do this once, manually:
 
 1. From a fresh clone, run `./install.sh`. Confirm `agentic-eng` lands on
    your PATH per the printed instructions.
@@ -175,9 +180,10 @@ Universal Ctags installed). Once a real tag exists, do this once, manually:
    `/repo-snapshot` in the chat and confirm it reports that repository's own
    branch/status/commits — proving one global install serves both, with no
    `.kiro/skills/` committed into either repo.
-3. In one of those repositories, ask a symbol question that
-   `/repository-context` would answer (e.g. "where is `<some function>`
-   defined"). Confirm it returns correct file:line evidence plus the
+3. In one of those repositories, type `/repository-context` followed by a
+   symbol question (e.g. `/repository-context where is <some function>
+   defined`), not plain conversational phrasing alone, that does not
+   reliably invoke it. Confirm it returns correct file:line evidence plus the
    repository's revision and dirty/stale/fallback flags. If Universal Ctags
    is installed, confirm at least one result is labeled
    `confidence=confirmed`; otherwise confirm it clearly reports
@@ -186,17 +192,19 @@ Universal Ctags installed). Once a real tag exists, do this once, manually:
 4. Publish a second tag, run `agentic-eng update`, confirm it activates, then
    `agentic-eng rollback` and confirm it reverts.
 5. With two unrelated real repositories where one actually calls a function
-   defined in the other, ask Kiro what consumes that function (naming both
-   repos). Confirm it reports `rel:status=supported` with file:line evidence
-   from both repositories. Ask the same question for a symbol that isn't
-   really shared between them and confirm it reports `rel:status=unknown`
-   rather than guessing a relationship.
+   defined in the other, type `/repository-context` and ask what consumes
+   that function (naming both repos). Confirm it reports
+   `rel:status=supported` with file:line evidence from both repositories.
+   Ask the same question for a symbol that isn't really shared between
+   them and confirm it reports `rel:status=unknown` rather than guessing a
+   relationship.
 6. In a real repository with Universal Ctags installed, run
    `repo-context.sh install-hooks` (or let the steering file do it the
    first time you work in that repo), confirm a result is
    `confidence=confirmed`, then rename or move a function and commit.
-   Without running `rebuild` yourself, ask the same symbol question again
-   a moment later and confirm it reflects the new location, sourced from
+   Without running `rebuild` yourself, type `/repository-context` with the
+   same symbol question again a moment later and confirm it reflects the
+   new location, sourced from
    the index, not just the always-on diff overlay. If that repo already
    has its own Git hooks (Husky or otherwise), confirm they still run
    afterward too.

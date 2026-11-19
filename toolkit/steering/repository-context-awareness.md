@@ -6,9 +6,30 @@ inclusion: always
 
 This workstation has the `repository-context` skill installed
 (`~/.kiro/skills/repository-context/repo-context.sh`) — source-grounded
-symbol/reference lookup with file:line evidence. See that skill's own
-`SKILL.md` for how to use it when actually asked a symbol/reference
-question. This note is only about one thing: noticing, once, when a
+symbol/reference lookup with file:line evidence.
+
+**Whenever a question needs a specific symbol, file, or code-path
+location in the current repository** (e.g. "where is X defined", "what
+calls Y", "what clients/classes/functions exist here", "is this file:line
+still accurate"), or whether one repository actually depends on another
+through a named contract (e.g. "what consumes this API", "does repo B
+still call this function from repo A") — run the lookup yourself, right
+then, as part of answering, regardless of how the question was phrased.
+Plain conversational phrasing is enough; the user never has to type
+`/repository-context` or know this skill exists:
+```
+bash ~/.kiro/skills/repository-context/repo-context.sh lookup "<symbol>" "<repo-root>"
+bash ~/.kiro/skills/repository-context/repo-context.sh relate "<symbol>" "<provider_repo>" "<consumer_repo>"
+```
+Use the result's file:line evidence, `confidence` (`confirmed`/`inferred`),
+and freshness flags in the answer, rather than grepping the repository
+yourself and describing what you find from general reasoning. See that
+skill's own `SKILL.md` for the exact output format and how to interpret
+each field. This is not optional: a question that needs this kind of
+grounded evidence should never be answered from an ungrounded guess when
+this script can answer it directly.
+
+Separately, this note is also about one thing: noticing, once, when a
 repository has never been indexed at all.
 
 **Once per session** (not per repository — this is a workstation-level

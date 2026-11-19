@@ -29,9 +29,13 @@ repository — nothing to import or configure per-repo:
 
 - `/repo-snapshot` — summarizes the current repo: branch, status, recent
   commits.
-- `repository-context` — ask a natural-language question about the
-  codebase (e.g. "where is `calculate_discount` defined?", "what
-  references `OrderValidator`?") and Kiro matches it to this skill.
+- `repository-context` — type `/repository-context` followed by your
+  question (e.g. `/repository-context where is calculate_discount
+  defined?`, `/repository-context what references OrderValidator?`).
+  Confirmed against the real IDE: plain conversational phrasing, with no
+  `/command`, does **not** reliably invoke this skill, Kiro answers on its
+  own by grepping instead, with no file:line evidence or freshness
+  labeling. Always use the explicit command.
   Answers include file:line evidence, the indexed commit, whether the
   working tree is dirty/stale, and whether each result is
   `confidence=confirmed` (a verified definition) or `confidence=inferred`
@@ -52,11 +56,7 @@ repository — nothing to import or configure per-repo:
 
 Both skills are read-only (`install-hooks` only ever touches a
 repository's own local, untracked Git hooks, coexisting with any existing
-hook content such as Husky's rather than replacing it). **Unverified:**
-whether Kiro invokes a skill
-purely from conversational phrasing (vs. a typed `/command`) hasn't been
-confirmed against the real IDE from this repo's own dev environment — see
-`docs/SETUP.md`'s Verify section.
+hook content such as Husky's rather than replacing it).
 
 You shouldn't need to discover `repository-context` yourself the first
 time: a steering file (`toolkit/steering/repository-context-awareness.md`)
