@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 # um-agentic-engineering Kiro toolkit CLI.
 #
-# Usage:
-#   agentic-eng install     First-time setup: install the latest approved release.
-#   agentic-eng update      Explicitly check for and activate a newer approved release.
+# The two calls that matter day to day:
+#   agentic-eng init        Once per machine and once per repo: install the
+#                            toolkit, set up this repo's indexing, and (if
+#                            you give it an Artifacts feed) wire up CI
+#                            publishing. Safe to re-run.
+#   agentic-eng update      Whenever: bring the toolkit and this repo's
+#                            setup up to date. Never asks anything new; only
+#                            refreshes what init already turned on.
+#
+# 'install' is the exact same command as 'init', kept only because
+# install.sh (day-zero, before agentic-eng is on PATH) calls it by that
+# name; there is no behavior difference, use 'init'.
+#
+# Everything else below is a less-common/recovery command, not part of the
+# normal flow:
 #   agentic-eng version     Show installed version and (if reachable) the latest available.
 #   agentic-eng rollback    Restore the previously installed release. Works offline.
 #   agentic-eng uninstall   Remove everything agentic-eng has installed.
@@ -12,7 +24,7 @@
 # First run (from a clone of um-agentic-engineering):
 #   git clone git@github.com:jakubkeller/um-agentic-engineering.git
 #   cd um-agentic-engineering
-#   ./agentic-eng install
+#   ./agentic-eng init
 #
 # See docs/SETUP.md for prerequisites, platform support, and verification.
 set -euo pipefail
@@ -54,21 +66,36 @@ show_help() {
   cat <<'EOF'
 agentic-eng — um-agentic-engineering shared Kiro toolkit
 
-Usage:
-  agentic-eng install     Install the latest approved release (first-time setup).
-  agentic-eng update      Check for and activate a newer approved release.
+The two calls that matter:
+  agentic-eng init [--ci-feed <Project/Feed>] [--skip-ci]
+                           Once per machine, once per repo. Installs the
+                           toolkit, indexes this repo, and turns on
+                           automatic Git-hook refresh. If --ci-feed is
+                           given (or you're at an interactive prompt and
+                           answer one when asked), also wires up this
+                           repo's Azure Pipeline to publish a versioned
+                           baseline after every merge. Safe to re-run.
+  agentic-eng update       Brings the toolkit and this repo's setup up to
+                           date. Never asks anything new; only refreshes
+                           whatever init already turned on.
+
+('install' is the exact same command as 'init', just the older name;
+install.sh calls it that way since it runs before 'init' would exist on
+your PATH. There is no behavior difference.)
+
+Less common/recovery commands:
   agentic-eng version     Show installed version and (if reachable) the latest available.
   agentic-eng rollback    Restore the previously installed release (works offline).
   agentic-eng uninstall   Remove everything agentic-eng has installed.
   agentic-eng --help      Show this help.
 
-First run (from a clone of um-agentic-engineering):
+First run (from a clone of um-agentic-engineering, inside whichever repo you want set up):
   git clone git@github.com:jakubkeller/um-agentic-engineering.git
   cd um-agentic-engineering
-  ./agentic-eng install
+  ./agentic-eng init
 
 That also copies agentic-eng onto your machine so later commands work from
-anywhere once it's on your PATH (install/update print the exact line to add
+anywhere once it's on your PATH (init/update print the exact line to add
 if it isn't already).
 
 State: ~/.kiro/.um-agentic-engineering/
@@ -231,6 +258,15 @@ inclusion: always
 ---
 
 um-agentic-engineering toolkit installed version: $version (commit $commit), last updated $(date -u +%Y-%m-%dT%H:%M:%SZ).
+
+Once per session (not more often), the first time this becomes relevant,
+run \`agentic-eng version\`. If it reports an update is available and the
+release source is reachable, run \`agentic-eng update\` yourself, right
+then, without asking first (it only ever touches this machine's own
+\`~/.kiro\`, nothing inside any repo), then tell the user in one line what
+changed and that Kiro needs a restart to pick it up. If the release
+source is unreachable (offline), say nothing. Don't check again this
+session.
 EOF
 }
 
@@ -421,11 +457,99 @@ do_install_or_update() {
   info "Restart Kiro (or reload its window) to pick up the change."
 }
 
+# scrape_ci_feed <pipeline_file>: pulls the Azure Artifacts feed back out
+# of a pipeline file ci-setup already wrote, so 'update' can refresh an
+# already-configured repo's vendored script without asking the engineer
+# to repeat information they already gave once, during init.
+scrape_ci_feed() {
+  local pipeline_file="$1"
+  [ -f "$pipeline_file" ] || return 1
+  sed -n "s/^[[:space:]]*vstsFeedPublish:[[:space:]]*'\([^']*\)'.*/\1/p" "$pipeline_file" | head -n1
+}
+
+# do_repo_bootstrap <mode> <ci_feed_override> <skip_ci>: the per-repo half
+# of 'init'/'update'. Operates on whatever git repo encloses the current
+# directory; does nothing (not an error) if that's not a git repo, or if
+# the repository-context skill isn't actually installed yet.
+#
+# mode=init: sets up Git-hook auto-refresh and builds the first index
+# unconditionally (both idempotent, safe to repeat). For CI publishing: if
+# already configured, just refreshes it (same as update); if not, and a
+# feed was given via <ci_feed_override> or an interactive prompt, turns it
+# on. Never turns on CI publishing silently, since that touches a tracked,
+# reviewed file and needs a feed name only the engineer has.
+#
+# mode=update: refreshes hooks/index the same way, but only ever refreshes
+# CI publishing if it was already configured, scraping the existing feed
+# back out of the pipeline file rather than asking again. Never newly
+# enables it, update must never surprise anyone with a new tracked-file
+# change they didn't ask for.
+do_repo_bootstrap() {
+  local mode="$1" ci_feed_override="${2:-}" skip_ci="${3:-0}"
+  local repo_ctx="$SKILLS_DIR/repository-context/repo-context.sh"
+  [ -f "$repo_ctx" ] || return 0
+
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$repo_root" ] || return 0
+
+  bash "$repo_ctx" install-hooks "$repo_root" >/dev/null 2>&1 || true
+  bash "$repo_ctx" refresh "$repo_root" >/dev/null 2>&1 || true
+  info "Repository context is set up and current for $repo_root."
+
+  local pipeline_file="$repo_root/azure-pipelines.yml"
+  local already_configured=0
+  bash "$repo_ctx" ci-setup-status "$repo_root" 2>/dev/null | grep -q '^ci:publish_configured=yes$' && already_configured=1
+
+  if [ "$already_configured" -eq 1 ]; then
+    local existing_feed
+    existing_feed="$(scrape_ci_feed "$pipeline_file" || true)"
+    if [ -n "$existing_feed" ]; then
+      if bash "$repo_ctx" ci-setup "$repo_root" --feed "$existing_feed" >/dev/null 2>&1; then
+        info "Refreshed repository-context CI publishing for $repo_root (feed: $existing_feed)."
+      fi
+    fi
+    return 0
+  fi
+
+  # Not yet configured. 'update' never newly enables this; only 'init' may.
+  [ "$mode" = "init" ] || return 0
+  [ "$skip_ci" = "1" ] && return 0
+
+  local feed="$ci_feed_override"
+  if [ -z "$feed" ] && [ -t 0 ] && [ -t 1 ]; then
+    printf 'Azure Artifacts feed to publish this repo'"'"'s context baseline to (e.g. Project/Feed), or leave blank to skip: ' >&2
+    IFS= read -r feed || feed=""
+  fi
+
+  if [ -z "$feed" ]; then
+    info "Skipped repository-context CI publishing for $repo_root. Run 'agentic-eng init --ci-feed <Project/Feed>' later to turn it on."
+    return 0
+  fi
+
+  if bash "$repo_ctx" ci-setup "$repo_root" --feed "$feed"; then
+    warn "Pipeline file and vendored script were written to $repo_root; review and commit them."
+  fi
+}
+
+do_init() {
+  local ci_feed="" skip_ci=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ci-feed) ci_feed="${2:-}"; shift 2 ;;
+      --skip-ci) skip_ci=1; shift ;;
+      *) fail "Unknown option for 'init': $1" ;;
+    esac
+  done
+  do_install_or_update
+  do_repo_bootstrap init "$ci_feed" "$skip_ci"
+}
+
 do_version() {
   local installed_version installed_tag installed_commit installed_at
   installed_version="$(manifest_field version 2>/dev/null || true)"
   if [ -z "$installed_version" ]; then
-    info "um-agentic-engineering toolkit is not installed. Run 'agentic-eng install'."
+    info "um-agentic-engineering toolkit is not installed. Run 'agentic-eng init'."
     return 0
   fi
   installed_tag="$(manifest_field tag 2>/dev/null || true)"
@@ -498,9 +622,11 @@ do_uninstall() {
 }
 
 ACTION="${1:-}"
+[ "$#" -gt 0 ] && shift
 case "$ACTION" in
-  install) do_install_or_update ;;
-  update) do_install_or_update ;;
+  init) do_init "$@" ;;
+  install) do_init "$@" ;;
+  update) do_install_or_update; do_repo_bootstrap update ;;
   version) do_version ;;
   rollback) do_rollback ;;
   uninstall) do_uninstall ;;

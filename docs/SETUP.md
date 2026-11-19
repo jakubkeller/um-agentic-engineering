@@ -65,7 +65,9 @@ cd um-agentic-engineering
 ```
 
 `install.sh` is a thin bootstrap wrapper — it just runs `./agentic-eng
-install`. That one run:
+install`, which is the exact same command as `init` (same code, older
+name, kept only because `install.sh` has to call it before `agentic-eng`
+itself is on `PATH`). That one run:
 
 1. resolves the **latest approved release** (the highest `vX.Y.Z` git tag on
    this repo — not whatever commit happens to be checked out),
@@ -79,8 +81,15 @@ install`. That one run:
 Restart Kiro, or reload its window, afterward so it picks up the new global
 skill — that one's on Kiro, there's no API to do it for you. Open a new
 shell (or `source` the rc file it printed) and `agentic-eng
-update|version|rollback` work as bare commands from any directory — no
-manual editing required.
+init|update|version|rollback` work as bare commands from any directory —
+no manual editing required.
+
+From here, `cd` into whichever repo you actually want set up and run
+`agentic-eng init`. That installs the toolkit (a no-op if `install.sh`
+already did it), indexes the repo, and turns on automatic refresh after
+commits/merges. If you also want this repo publishing a versioned baseline
+to Azure Artifacts after every merge, pass `--ci-feed <Project/Feed>`;
+otherwise it's skipped and you can turn it on later the same way.
 
 > **Known gap today:** this repo has no `vX.Y.Z` tags yet. Until a
 > maintainer creates and pushes the first one (`git tag -a v1.0.0 <commit>
@@ -91,9 +100,17 @@ manual editing required.
 
 ## Day-to-day commands
 
+The two that matter:
+
 ```sh
-agentic-eng install     # first-time setup (see above)
-agentic-eng update      # explicitly check for and activate a newer release
+agentic-eng init                               # once per machine, once per repo (idempotent, safe to re-run)
+agentic-eng init --ci-feed <Project/Feed>       # same, and also wire up this repo's publish pipeline
+agentic-eng update                              # keep the toolkit and this repo's setup current; never asks anything new
+```
+
+Recovery commands, not part of normal use:
+
+```sh
 agentic-eng version     # show installed version, and latest available if reachable
 agentic-eng rollback    # restore the previously installed release (works offline)
 agentic-eng uninstall   # remove everything agentic-eng has installed

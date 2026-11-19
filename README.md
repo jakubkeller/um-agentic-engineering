@@ -12,8 +12,13 @@ cd um-agentic-engineering
 ./install.sh
 ```
 
-Day-to-day, once set up: `agentic-eng install|update|version|rollback|uninstall`.
-See [docs/SETUP.md](docs/SETUP.md) for prerequisites, verification, and
+Then, from inside whichever repo you actually want set up: `agentic-eng init`
+(installs the toolkit if that's not done yet, indexes the repo, and turns on
+automatic refresh after commits/merges). Day-to-day after that, there are
+only two calls that matter: `agentic-eng init` (again, any time, it's
+idempotent) and `agentic-eng update`. `version`/`rollback`/`uninstall` exist
+for recovery but aren't part of normal use. See
+[docs/SETUP.md](docs/SETUP.md) for prerequisites, verification, and
 uninstall, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 for common failure recovery.
 
@@ -65,9 +70,13 @@ so the cache keeps catching up on its own after that.
 
 - `toolkit/` — the global, installable content (skills, steering, reserved
   agents). See [toolkit/README.md](toolkit/README.md).
-- `agentic-eng` — the CLI: install/update/version/rollback/uninstall.
+- `agentic-eng` — the CLI. Day to day: `init`, `update` (`install` is the
+  same command as `init`, just the older name). Recovery:
+  version/rollback/uninstall.
 - `install.sh` — day-zero bootstrap wrapper (`agentic-eng` can't be on PATH
-  before it's ever been run once); just calls `agentic-eng install`.
+  before it's ever been run once); just calls `agentic-eng install`
+  (= `init`). Run `agentic-eng init` directly afterward, from the repo you
+  actually want set up.
 - `scripts/smoke-test.sh` — repeatable, automated, fully-offline verification.
 - `scripts/repo-context-smoke-test.sh` — same, for the `repository-context`
   skill's `repo-context.sh`.

@@ -81,8 +81,42 @@ session):
    time and set up automatic refresh after commits/merges/branch switches
    so it doesn't go stale"), or mention it on its own, once, if step 3
    didn't apply. Don't mention it again this session for this repository.
+6. Also in this same first-time-per-repository moment, check whether this
+   repository already publishes a context baseline after merges:
+   ```
+   bash ~/.kiro/skills/repository-context/repo-context.sh ci-setup-status "<repo-root>"
+   ```
+   This checks `azure-pipelines.yml` at the repo root by default (Azure
+   DevOps's own default path). If this fails outright, say nothing and
+   skip the rest of this step. If it reports `ci:publish_configured=no`,
+   this is different from steps 3 and 5: don't run anything yet.
+   `ci-setup` edits (or creates) a tracked, reviewed file and needs
+   information nobody but the engineer has: which Azure Artifacts feed to
+   publish to, and, if this repo's actual pipeline lives somewhere other
+   than `azure-pipelines.yml` at the root, where that real file is. So
+   ask once, in the same one-line message as the rest of this step if any
+   applied this round: "this repo isn't publishing a repository-context
+   baseline after merges yet, want me to wire that up? I'll need the
+   Azure Artifacts feed to publish to (e.g. `YourProject/YourFeed`), and
+   let me know if your pipeline file isn't `azure-pipelines.yml` at the
+   repo root." If they say yes and give a feed, run:
+   ```
+   bash ~/.kiro/skills/repository-context/repo-context.sh ci-setup "<repo-root>" --feed "<feed>"
+   ```
+   adding `--pipeline-file "<path>"` if they named a different one, then
+   tell them what changed, the pipeline file (created vs. updated) and
+   the vendored `.ci/repository-context/repo-context.sh` ci-setup copies
+   alongside it, so they can review and commit both themselves, same as
+   any other code change. If they
+   decline, or don't answer, drop it, don't ask again this session. If
+   `ci-setup` reports `ci:status=created` for a repo that may be brand
+   new, also pass along its warning that someone still has to connect
+   that file as a Pipeline inside Azure DevOps itself, once, this toolkit
+   can't do that part.
 
-This never modifies anything inside the repository's tracked content:
-the rebuild only ever writes to its own cache directory under
+This never modifies anything inside the repository's tracked content on
+its own: the rebuild only ever writes to its own cache directory under
 `~/.kiro/.um-agentic-engineering/repo-context/`, and `install-hooks` only
-ever touches the repository's own local, untracked Git hooks.
+ever touches the repository's own local, untracked Git hooks. `ci-setup`
+(step 6) is the one exception, and it only ever runs after the engineer
+explicitly says yes.

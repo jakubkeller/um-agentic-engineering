@@ -43,6 +43,16 @@
 #   repo-context.sh verify  <bundle_dir>           Recompute a packaged artifact's per-file and overall sha256
 #                                                   against its manifest.txt and report ok/corrupt, printing the
 #                                                   manifest fields either way so it can be inspected.
+#   repo-context.sh ci-setup <repo_root> --feed <Project/Feed> [--package <name>] [--pipeline-file <path>]
+#                                                   Wire rebuild, then package, then verify, then publish
+#                                                   directly into the repo's own Azure Pipelines YAML (default
+#                                                   azure-pipelines.yml at the repo root; pass --pipeline-file
+#                                                   if the real one lives elsewhere). Creates it if missing.
+#                                                   Re-running replaces only its own previously-installed
+#                                                   block, same pattern as install-hooks.
+#   repo-context.sh ci-setup-status [repo_root] [--pipeline-file <path>]
+#                                                   Report whether ci-setup has already configured this repo
+#                                                   (read-only).
 #   repo-context.sh --help
 #
 # repo_root defaults to the git repo enclosing the current directory.
@@ -74,14 +84,14 @@
 # lightweight record (never a graph, never a second indexer) under
 # ${AGENTIC_TOOLKIT_HOME:-$HOME}/.kiro/.um-agentic-engineering/repo-relations/<key>/.
 #
-# Post-merge baseline publication (`package`/`verify`, PBI 297919): `package`
-# does not index anything new — it only packages the cache this script already
-# built (via `rebuild`/`refresh`) into a self-contained, checksummed bundle
-# that an approved CI pipeline can hand to whatever artifact storage it's
-# permitted to use (see ci-templates/ at the repo root for an Azure Pipelines
-# template, not executed from here). `verify` lets anyone who has retrieved a
-# bundle confirm it hasn't been corrupted or tampered with, independent of
-# how it was stored or transported.
+# Post-merge baseline publication (`package`/`verify`/`ci-setup`, PBI 297919):
+# `package` does not index anything new — it only packages the cache this
+# script already built (via `rebuild`/`refresh`) into a self-contained,
+# checksummed bundle for Azure Pipelines to publish to Azure Artifacts.
+# `verify` lets anyone who has retrieved a bundle confirm it hasn't been
+# corrupted or tampered with, independent of how it was stored or
+# transported. `ci-setup` wires rebuild/package/verify/publish directly into
+# a repo's own azure-pipelines.yml so no one ever hand-copies this YAML.
 #
 # Env vars:
 #   AGENTIC_TOOLKIT_HOME            Redirect cache under a throwaway home (see scripts/smoke-test.sh's use of the same variable for agentic-eng).
@@ -99,6 +109,10 @@ DEFAULT_TIMEOUT=15
 HOOK_NAMES="post-commit post-merge post-checkout"
 HOOK_MARK_BEGIN='# >>> um-agentic-engineering repository-context refresh (managed block) >>>'
 HOOK_MARK_END='# <<< um-agentic-engineering repository-context refresh <<<'
+
+CI_MARK_BEGIN='# >>> um-agentic-engineering repository-context publish (managed block) >>>'
+CI_MARK_END='# <<< um-agentic-engineering repository-context publish <<<'
+CI_VENDOR_REL='.ci/repository-context/repo-context.sh'
 
 info() { printf '==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -1075,6 +1089,308 @@ cmd_verify() {
   fi
 }
 
+# ci_publish_block <feed> <package>: the managed Azure Pipelines steps
+# block wired into a repo's pipeline YAML by cmd_ci_setup, written flush
+# left (sequence dash at column 0). cmd_ci_setup re-indents the whole
+# block uniformly via indent_block to match wherever it's actually being
+# inserted, so this function never has to know or guess the target's
+# indentation convention. References the vendored copy of this script at
+# $(Build.SourcesDirectory)/.ci/repository-context/repo-context.sh (see
+# vendor_ci_script), never a path under ~/.kiro or $(Pipeline.Workspace):
+# those only exist if whatever is running this build happens to already
+# have the toolkit installed, which a fresh Microsoft-hosted agent never
+# does. $(Build.SourcesDirectory) is the triggering repo's own checkout,
+# guaranteed to exist on any agent, hosted or self-hosted, with nothing
+# extra to provision. Also installs Universal Ctags first if it isn't
+# already on the agent: without it, rebuild silently falls back to a
+# direct-source search that writes no index file at all, so package
+# would refuse every single run with nothing to actually publish.
+# Values are substituted via plain string replacement, not shell/awk
+# expansion, so the literal Azure macros ($(Build.SourcesDirectory) etc.)
+# in the heredoc below are never touched by this script's own shell.
+ci_publish_block() {
+  local feed="$1" package="$2" block
+  block="$(cat <<'YAML_EOF'
+# >>> um-agentic-engineering repository-context publish (managed block) >>>
+- bash: |
+    set -euo pipefail
+    if command -v ctags >/dev/null 2>&1 && ctags --version 2>/dev/null | grep -qi 'Universal Ctags'; then
+      echo "Universal Ctags already present."
+      exit 0
+    fi
+    SUDO=""
+    [ "$(id -u)" != "0" ] && SUDO="sudo"
+    if command -v apt-get >/dev/null 2>&1; then
+      $SUDO apt-get update -y && $SUDO apt-get install -y universal-ctags
+    elif command -v brew >/dev/null 2>&1; then
+      brew install universal-ctags
+    elif command -v dnf >/dev/null 2>&1; then
+      $SUDO dnf install -y ctags
+    elif command -v apk >/dev/null 2>&1; then
+      $SUDO apk add --no-cache universal-ctags
+    else
+      echo "No supported package manager found to install Universal Ctags on this agent. Without it, rebuild falls back to a direct-source search with no index file, and package has nothing to publish. Install Universal Ctags on this agent image, or adjust this step for your platform." >&2
+      exit 1
+    fi
+  displayName: 'repository-context: ensure Universal Ctags is available'
+
+- bash: |
+    set -euo pipefail
+    bash "$(Build.SourcesDirectory)/.ci/repository-context/repo-context.sh" rebuild --force "$(Build.SourcesDirectory)"
+  displayName: 'repository-context: rebuild index for the merged commit'
+
+- bash: |
+    set -euo pipefail
+    rm -rf "$(Build.ArtifactStagingDirectory)/repo-context-baseline"
+    bash "$(Build.SourcesDirectory)/.ci/repository-context/repo-context.sh" package "$(Build.SourcesDirectory)" "$(Build.ArtifactStagingDirectory)/repo-context-baseline"
+  displayName: 'repository-context: package a versioned, checksummed artifact'
+
+- bash: |
+    set -euo pipefail
+    bash "$(Build.SourcesDirectory)/.ci/repository-context/repo-context.sh" verify "$(Build.ArtifactStagingDirectory)/repo-context-baseline"
+  displayName: 'repository-context: verify artifact integrity before publishing'
+
+- task: UniversalPackages@0
+  displayName: 'repository-context: publish baseline (no version is created unless every prior step succeeded)'
+  inputs:
+    command: publish
+    publishDirectory: '$(Build.ArtifactStagingDirectory)/repo-context-baseline'
+    vstsFeedPublish: '__ARTIFACT_FEED__'
+    vstsFeedPackagePublish: '__PACKAGE_NAME__'
+    versionOption: custom
+    versionPublish: '0.0.$(Build.BuildId)'
+# <<< um-agentic-engineering repository-context publish <<<
+YAML_EOF
+)"
+  block="${block//__ARTIFACT_FEED__/$feed}"
+  block="${block//__PACKAGE_NAME__/$package}"
+  printf '%s\n' "$block"
+}
+
+# indent_block <n>: filter that prefixes every non-blank line of stdin
+# with <n> spaces, leaving blank lines blank. Used to re-indent
+# ci_publish_block's flush-left output to match wherever it's inserted.
+indent_block() {
+  local n="$1" pad line
+  pad="$(printf '%*s' "$n" '')"
+  while IFS= read -r line; do
+    if [ -z "$line" ]; then
+      printf '\n'
+    else
+      printf '%s%s\n' "$pad" "$line"
+    fi
+  done
+}
+
+# detect_steps_indent <file> <steps_line_no>: looks at the lines after a
+# known `steps:` key for the first one that's a sequence item (optionally
+# past blank/comment-only lines) and prints how many leading spaces it
+# has. Prints nothing (caller defaults) if the list is empty, the file
+# ends first, or a line that's neither blank, a comment, nor a sequence
+# item is hit (a different, unrelated key: stop looking, don't guess).
+detect_steps_indent() {
+  local file="$1" steps_line="$2" total line trimmed
+  local i
+  i=$(( steps_line + 1 ))
+  total="$(wc -l < "$file" | tr -d ' ')"
+  while [ "$i" -le "$total" ]; do
+    line="$(sed -n "${i}p" "$file")"
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    if [ -z "$trimmed" ]; then
+      i=$((i + 1)); continue
+    fi
+    case "$trimmed" in
+      '#'*) i=$((i + 1)); continue ;;
+      -*) printf '%s' $(( ${#line} - ${#trimmed} )); return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
+# detect_default_branch <repo_root>: the branch a freshly-created pipeline
+# file's trigger should target. Prefers the remote's actual default branch
+# (accurate once origin/HEAD has been fetched/set), falls back to whatever
+# branch is currently checked out (the best available guess for a repo
+# with no remote yet), and only falls back to the literal "main" if
+# neither is available, since guessing wrong here would mean the trigger
+# silently never fires.
+detect_default_branch() {
+  local root="$1" ref
+  ref="$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$ref" ]; then
+    printf '%s' "${ref#origin/}"
+    return 0
+  fi
+  ref="$(git -C "$root" branch --show-current 2>/dev/null || true)"
+  if [ -n "$ref" ]; then
+    printf '%s' "$ref"
+    return 0
+  fi
+  printf 'main'
+}
+
+# vendor_ci_script <repo_root>: copies this running repo-context.sh into
+# the target repo at CI_VENDOR_REL. The generated pipeline steps always
+# call that vendored copy, under $(Build.SourcesDirectory), never a path
+# under ~/.kiro or $(Pipeline.Workspace), because the triggering repo's
+# own checkout is the only thing any build agent (hosted or self-hosted)
+# is ever guaranteed to already have; nothing else can be assumed to be
+# pre-installed there. This is a pinned snapshot, not a live link: it
+# always re-copies on a re-run, so re-running ci-setup after this script
+# changes is how a team picks up a fix for CI purposes.
+vendor_ci_script() {
+  local root="$1" self dest
+  self="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+  dest="$root/$CI_VENDOR_REL"
+  mkdir -p "$(dirname "$dest")" || fail "Could not create parent directory for $dest"
+  cp "$self" "$dest" || fail "Could not vendor $self to $dest"
+  chmod +x "$dest"
+}
+
+# cmd_ci_setup <repo_root> --feed <project/feed> [--package <name>] [--pipeline-file <path>]
+# Wires the rebuild, then package, then verify, then publish sequence
+# directly into the repo's own Azure Pipelines YAML, so a team never
+# hand-copies this. --pipeline-file defaults to azure-pipelines.yml at the
+# repo root (Azure DevOps's own default when a pipeline is first created
+# from the UI); pass it explicitly when a repo's actual pipeline lives at
+# a different path, or this would create a second, never-triggered file
+# instead of editing the real one. Must be a relative path inside the
+# repo (no leading "/", no ".." segments).
+#
+# Creates the file fresh if it doesn't exist yet at that path, using
+# whichever branch detect_default_branch resolves as the trigger (a
+# brand-new repo also still needs a human, once, to connect that file as
+# a Pipeline inside Azure DevOps itself; writing the YAML cannot do that,
+# and this command says so).
+#
+# Otherwise inserts (or, on a re-run, replaces only) a clearly marked
+# block right after the file's single top-level `steps:` key, matching
+# whatever indentation that file's own steps already use (detect_steps_
+# indent), not a hardcoded one, so this never produces invalid YAML
+# against a real hand-written pipeline. Refuses, rather than guessing,
+# when: the file has `trigger: none` (the publish steps would then never
+# actually run post-merge, defeating the entire point); or the file
+# doesn't have exactly one top-level `steps:` key (typically a
+# multi-stage pipeline, where the real `steps:` lives nested under each
+# job, not at the top level).
+cmd_ci_setup() {
+  local positional=() feed="" package="" pipeline_rel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --feed) feed="${2:-}"; shift 2 ;;
+      --package) package="${2:-}"; shift 2 ;;
+      --pipeline-file) pipeline_rel="${2:-}"; shift 2 ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  local root_arg="${positional[0]:-}"
+  [ -n "$feed" ] || fail "Usage: repo-context.sh ci-setup <repo_root> --feed <Project/Feed> [--package <name>] [--pipeline-file <path>]"
+
+  local root
+  root="$(resolve_root_or_fail "$root_arg")" || exit 1
+  [ -n "$package" ] || package="repository-context-baseline-$(basename "$root")"
+  [ -n "$pipeline_rel" ] || pipeline_rel="azure-pipelines.yml"
+  case "$pipeline_rel" in
+    /*) fail "--pipeline-file must be relative to the repo root, not absolute: $pipeline_rel" ;;
+    *..*) fail "--pipeline-file must stay inside the repository; '..' segments are not allowed: $pipeline_rel" ;;
+  esac
+
+  local pipeline_file="$root/$pipeline_rel"
+
+  if [ ! -f "$pipeline_file" ]; then
+    local branch
+    branch="$(detect_default_branch "$root")"
+    local block
+    block="$(ci_publish_block "$feed" "$package" | indent_block 2)"
+    mkdir -p "$(dirname "$pipeline_file")" || fail "Could not create parent directory for $pipeline_file"
+    vendor_ci_script "$root"
+    {
+      printf 'trigger:\n'
+      printf '  branches:\n'
+      printf '    include: [ %s ]\n' "$branch"
+      printf '\n'
+      printf 'steps:\n'
+      printf '%s\n' "$block"
+    } > "$pipeline_file"
+    printf 'ci:status=created\n'
+    printf 'ci:file=%s\n' "$pipeline_file"
+    printf 'ci:trigger_branch=%s\n' "$branch"
+    printf 'ci:vendored_script=%s\n' "$root/$CI_VENDOR_REL"
+    printf 'ci:feed=%s\n' "$feed"
+    printf 'ci:package=%s\n' "$package"
+    warn "Created $pipeline_file (and vendored $CI_VENDOR_REL, commit both), triggered on '$branch'. If this repo's pipeline actually lives at a different path, re-run with --pipeline-file <path> instead, this new file won't run until something points Azure DevOps at it. And if this repo has no Pipeline connected in Azure DevOps at all yet, that one connection has to be made once, in Azure DevOps itself (New Pipeline, use existing YAML file, select this path), nothing here can do that part."
+    return 0
+  fi
+
+  if grep -qE '^trigger:[[:space:]]*none[[:space:]]*$' "$pipeline_file"; then
+    warn "Refusing to edit $pipeline_file: it has 'trigger: none', so a push/merge never runs this pipeline at all. Wiring the publish steps in here would mean they never run post-merge either, which defeats the point. Resolve that trigger first (or wire this into whichever pipeline actually runs on merge), then re-run ci-setup."
+    return 1
+  fi
+
+  local stripped
+  stripped="$(mktemp "${pipeline_file}.stripped.XXXXXX")" || fail "Could not create a temp file next to $pipeline_file"
+  awk -v begin="$CI_MARK_BEGIN" -v end="$CI_MARK_END" '
+    index($0, begin) { skip=1; next }
+    index($0, end) { skip=0; next }
+    skip {next}
+    {print}
+  ' "$pipeline_file" > "$stripped"
+
+  local steps_count
+  steps_count="$(grep -cE '^steps:[[:space:]]*(#.*)?$' "$stripped")"
+  if [ "$steps_count" -ne 1 ]; then
+    local block_preview
+    block_preview="$(ci_publish_block "$feed" "$package" | indent_block 2)"
+    rm -f "$stripped"
+    warn "Refusing to edit $pipeline_file automatically: expected exactly one top-level 'steps:' key, found $steps_count. This usually means multiple stages/jobs, where the real steps: lives nested under each job. Insert this block by hand under the right job's steps:"
+    printf '%s\n' "$block_preview" >&2
+    return 1
+  fi
+
+  local line_no indent block
+  line_no="$(grep -nE '^steps:[[:space:]]*(#.*)?$' "$stripped" | head -n1 | cut -d: -f1)"
+  indent="$(detect_steps_indent "$stripped" "$line_no")" || indent=2
+  block="$(ci_publish_block "$feed" "$package" | indent_block "$indent")"
+
+  local tmp
+  tmp="$(mktemp "${pipeline_file}.XXXXXX")" || { rm -f "$stripped"; fail "Could not create a temp file next to $pipeline_file"; }
+  { head -n "$line_no" "$stripped"; printf '%s\n' "$block"; tail -n "+$((line_no + 1))" "$stripped"; } > "$tmp"
+  mv "$tmp" "$pipeline_file"
+  rm -f "$stripped"
+  vendor_ci_script "$root"
+
+  printf 'ci:status=updated\n'
+  printf 'ci:file=%s\n' "$pipeline_file"
+  printf 'ci:vendored_script=%s\n' "$root/$CI_VENDOR_REL"
+  printf 'ci:feed=%s\n' "$feed"
+  printf 'ci:package=%s\n' "$package"
+}
+
+# cmd_ci_setup_status <repo_root> [--pipeline-file <path>]: read-only check
+# for whether cmd_ci_setup has already wired this repo's pipeline file
+# (default azure-pipelines.yml; pass --pipeline-file to match a non-default
+# path exactly as it was given to ci-setup).
+cmd_ci_setup_status() {
+  local positional=() pipeline_rel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pipeline-file) pipeline_rel="${2:-}"; shift 2 ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  local root
+  root="$(resolve_root_or_fail "${positional[0]:-}")" || exit 1
+  [ -n "$pipeline_rel" ] || pipeline_rel="azure-pipelines.yml"
+  local pipeline_file="$root/$pipeline_rel"
+  printf 'ci:file=%s\n' "$pipeline_file"
+  if [ -f "$pipeline_file" ] && grep -qF "$CI_MARK_BEGIN" "$pipeline_file" 2>/dev/null; then
+    printf 'ci:publish_configured=yes\n'
+  else
+    printf 'ci:publish_configured=no\n'
+  fi
+}
+
 show_help() {
   cat <<'EOF'
 repo-context.sh — source-grounded repository symbol/reference lookup
@@ -1105,6 +1421,15 @@ Usage:
                                                   if the cache isn't FRESH or the working tree is dirty.
   repo-context.sh verify  <bundle_dir>           Recompute and check a packaged artifact's checksums; prints
                                                   its manifest fields either way (repo/commit/schema/indexer).
+  repo-context.sh ci-setup <repo_root> --feed <Project/Feed> [--package <name>] [--pipeline-file <path>]
+                                                  Wire rebuild, then package, then verify, then publish
+                                                  directly into the repo's own Azure Pipelines YAML (default
+                                                  azure-pipelines.yml; pass --pipeline-file if the real one
+                                                  lives elsewhere). Creates it if missing. Re-running
+                                                  replaces only its own previously-installed block.
+  repo-context.sh ci-setup-status [repo_root] [--pipeline-file <path>]
+                                                  Report whether ci-setup has already configured this repo
+                                                  (read-only).
   repo-context.sh --help
 
 repo_root defaults to the git repo enclosing the current directory.
@@ -1130,6 +1455,8 @@ case "$ACTION" in
   hooks-status)  cmd_hooks_status "${ARGS[@]}" ;;
   package)       cmd_package "${ARGS[@]}" ;;
   verify)        cmd_verify "${ARGS[@]}" ;;
+  ci-setup)        cmd_ci_setup "${ARGS[@]}" ;;
+  ci-setup-status) cmd_ci_setup_status "${ARGS[@]}" ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;
 esac

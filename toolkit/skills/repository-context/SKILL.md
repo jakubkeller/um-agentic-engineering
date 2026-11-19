@@ -230,17 +230,55 @@ the exact same cache this skill already builds via `rebuild`/`refresh`.
    ```
    bash <that-dir>/repo-context.sh verify "<bundle-dir>"
    ```
-3. This skill and script are deliberately silent on *how* a bundle gets
-   from a CI job to wherever engineers retrieve it from — that depends on
-   which post-merge mechanism and artifact storage a repository's owning
-   team has actually approved (GitHub vs. Azure DevOps, Azure Artifacts vs.
-   something else), which this toolkit cannot assume and must not decide
-   on another team's behalf. See `ci-templates/` at the root of this
-   repository for an Azure Pipelines template that wires `rebuild` →
-   `package` → `verify` → publish together as a reference a real
-   ADO-hosted repository's team can adopt into their own pipeline — it is
-   not executed by this repository's own CI, because this repository has
-   none.
+3. `ci-setup` wires steps 1 and 2 directly into a repo's own Azure
+   Pipelines YAML, so no one ever hand-copies this:
+   ```
+   bash <that-dir>/repo-context.sh ci-setup "<repo-root>" --feed "<Project/Feed>" [--package "<name>"] [--pipeline-file "<path>"]
+   ```
+   It creates a minimal pipeline file at `azure-pipelines.yml` (repo
+   root), triggered on the repo's actual default branch, if none exists
+   yet; otherwise it inserts a clearly marked block right after the
+   file's `steps:` key, matching that file's own indentation (and a
+   re-run replaces only that same block, never anything else in the
+   file). It refuses, rather than guessing, on a pipeline with
+   `trigger: none` (the publish steps would then never run post-merge
+   either) or with more than one top-level `steps:` key (a multi-stage
+   pipeline). If a repo's actual pipeline lives at a different path, pass
+   `--pipeline-file` with that path (a relative path inside the repo
+   only, no `..`), otherwise this would create a second file that never
+   runs instead of editing the real one. `--package` defaults to
+   `repository-context-baseline-<repo-name>` if left out. The only input
+   a team has to supply is which Azure Artifacts feed to publish to,
+   everything else (the commit, the checksums, the pipeline wiring
+   itself) is handled for them. `ci-setup-status "<repo-root>"` reports,
+   read-only, whether this has already been done.
+
+   `ci-setup` also copies this script itself into the target repo at
+   `.ci/repository-context/repo-context.sh`, and the generated steps call
+   that vendored copy under `$(Build.SourcesDirectory)`, never a path
+   under `~/.kiro` or `$(Pipeline.Workspace)`. A fresh build agent, hosted
+   or self-hosted, is never guaranteed to have anything pre-installed,
+   only the triggering repo's own checkout, so the script travels with
+   the repo instead of assuming it's already there. The generated steps
+   also install Universal Ctags on the agent first if it isn't already
+   present (`apt-get`/`brew`/`dnf`/`apk`, whichever exists), since without
+   it `rebuild` has no real index to publish at all, only the direct-source
+   fallback. Both the pipeline file and the vendored script need to be
+   committed, same as any other code change. Re-running `ci-setup` after
+   this script changes re-vendors the copy, so a team wanting a `repo-
+   context.sh` bug fix in their CI needs to re-run it, it doesn't update
+   itself.
+4. This never runs on its own: an engineer (or an agent acting on their
+   behalf, see `toolkit/steering/repository-context-awareness.md`'s
+   bootstrap step) has to run `ci-setup` once per repository and commit
+   the result, the same way `install-hooks` has to run once before Git
+   hooks exist. After that, the repository's own CI publishes a new
+   baseline on every merge without anyone touching it again. One thing
+   `ci-setup` genuinely cannot do: for a repository with no Pipeline
+   connected in Azure DevOps at all yet, writing the YAML file is
+   necessary but not sufficient, someone still has to connect it once
+   inside Azure DevOps itself (New Pipeline, use existing YAML file).
+   That one click requires org access this toolkit doesn't have.
 
 ## Notes
 
@@ -261,4 +299,5 @@ the exact same cache this skill already builds via `rebuild`/`refresh`.
 - Run `bash <that-dir>/repo-context.sh --help` for the full command
   surface (`status`, `rebuild`, `lookup`, `diff`, `relate`,
   `relate-status`, `relations-for`, `refresh`, `refresh-async`,
-  `install-hooks`, `hooks-status`, `package`, `verify`).
+  `install-hooks`, `hooks-status`, `package`, `verify`, `ci-setup`,
+  `ci-setup-status`).
