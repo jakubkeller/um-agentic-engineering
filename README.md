@@ -53,7 +53,13 @@ repository — nothing to import or configure per-repo:
   (`install-hooks`/`hooks-status`) and a bounded, backgrounded refresh
   runs after commits, merges, and branch switches, so nobody has to
   remember to rebuild the cache by hand, and it's never a persistent
-  watcher or daemon.
+  watcher or daemon. The first time it needs to index a repository, it
+  tries reusing that repository's own already-published baseline
+  (`fetch-baseline`) before rebuilding one locally, with no flags needed:
+  it auto-detects the feed and organization to pull from, verifies the
+  artifact is actually intact and published for that exact repository
+  before adopting it, and falls straight back to a local rebuild if
+  anything about that isn't true.
 
 Both skills are read-only (`install-hooks` only ever touches a
 repository's own local, untracked Git hooks, coexisting with any existing
@@ -62,10 +68,11 @@ hook content such as Husky's rather than replacing it).
 You shouldn't need to discover `repository-context` yourself the first
 time: a steering file (`toolkit/steering/repository-context-awareness.md`)
 tells every agent to notice, once per repository per session, when a repo
-has never been indexed, and index it itself right then with a one-line
-heads-up — rather than waiting to be asked a question that needs it. The
-same moment also installs that repo's Git hooks if they aren't there yet,
-so the cache keeps catching up on its own after that.
+has never been indexed, and index it itself right then (reusing a
+published baseline when one exists, rebuilding locally otherwise) with a
+one-line heads-up, rather than waiting to be asked a question that needs
+it. The same moment also installs that repo's Git hooks if they aren't
+there yet, so the cache keeps catching up on its own after that.
 
 ## Layout
 

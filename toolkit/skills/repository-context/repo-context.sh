@@ -53,6 +53,13 @@
 #   repo-context.sh ci-setup-status [repo_root] [--pipeline-file <path>]
 #                                                   Report whether ci-setup has already configured this repo
 #                                                   (read-only).
+#   repo-context.sh fetch-baseline [repo_root] [--feed <Project/Feed>] [--org <url>]
+#                                  [--package <name>] [--version <ver>] [--from <dir>] [--force]
+#                                                   Adopt a compatible published baseline as this repo's
+#                                                   local cache instead of rebuilding one. Rejects (leaving
+#                                                   the local cache untouched) anything corrupt, schema-
+#                                                   incompatible, or published for a different repository.
+#                                                   --feed/--package default to what ci-setup configured.
 #   repo-context.sh --help
 #
 # repo_root defaults to the git repo enclosing the current directory.
@@ -92,6 +99,17 @@
 # corrupted or tampered with, independent of how it was stored or
 # transported. `ci-setup` wires rebuild/package/verify/publish directly into
 # a repo's own azure-pipelines.yml so no one ever hand-copies this YAML.
+#
+# Reusing a published baseline locally (`fetch-baseline`, PBI 297918): the
+# consume-side counterpart. Verifies integrity the same way `verify` does,
+# then additionally checks the artifact is for this exact repository and
+# matches this script's schema version before installing it as this
+# repo's own cache, exactly as if `rebuild` had produced it locally.
+# Anything that fails either check is rejected and the local cache is
+# left untouched, so the normal rebuild/direct-source fallback still
+# applies. Uncommitted local changes are never hidden either way: the
+# diff overlay runs on every lookup regardless of where the cache came
+# from.
 #
 # Env vars:
 #   AGENTIC_TOOLKIT_HOME            Redirect cache under a throwaway home (see scripts/smoke-test.sh's use of the same variable for agentic-eng).
@@ -369,6 +387,7 @@ build_index() {
     printf 'schema_version: %s\n' "$CACHE_SCHEMA_VERSION"
     printf 'symbol_count: %s\n' "$symbol_count"
     printf 'generated_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'source: local\n'
   } > "$staging/metadata.txt"
 
   rm -rf "$cache_dir"
@@ -390,6 +409,7 @@ ensure_fresh_or_fallback() {
     EFF_STATE="no-commits"
     EFF_INDEXER="none"
     EFF_INDEXED_COMMIT="none"
+    EFF_CACHE_SOURCE="none"
     return 1
   fi
 
@@ -399,10 +419,12 @@ ensure_fresh_or_fallback() {
       EFF_STATE="rebuilt"
       EFF_INDEXER="$BUILD_INDEXER"
       EFF_INDEXED_COMMIT="$(read_field "$cache_dir/metadata.txt" commit)"
+      EFF_CACHE_SOURCE="local"
     else
       EFF_STATE="fallback"
       EFF_INDEXER="direct-source-fallback"
       EFF_FALLBACK_REASON="$BUILD_REASON"
+      EFF_CACHE_SOURCE="none"
       if [ "$STATE" = "MISSING" ]; then
         EFF_INDEXED_COMMIT="none"
       else
@@ -414,6 +436,7 @@ ensure_fresh_or_fallback() {
 
   EFF_INDEXER="$(read_field "$cache_dir/metadata.txt" indexer)"
   EFF_INDEXED_COMMIT="$(read_field "$cache_dir/metadata.txt" commit)"
+  EFF_CACHE_SOURCE="$(read_field "$cache_dir/metadata.txt" source 2>/dev/null || echo local)"
   if [ "$STATE" = "STALE_REVISION" ]; then
     EFF_STATE="stale-by-revision"
   else
@@ -433,6 +456,7 @@ print_ctx_header() {
   printf 'ctx:index_state=%s\n' "$EFF_STATE"
   printf 'ctx:indexed_commit=%s\n' "${EFF_INDEXED_COMMIT:-none}"
   printf 'ctx:indexer=%s\n' "${EFF_INDEXER:-direct-source-fallback}"
+  printf 'ctx:cache_source=%s\n' "${EFF_CACHE_SOURCE:-none}"
   if [ "$EFF_STATE" = "fallback" ] && [ -n "${EFF_FALLBACK_REASON:-}" ]; then
     printf 'ctx:fallback_reason=%s\n' "$EFF_FALLBACK_REASON"
   fi
@@ -561,6 +585,7 @@ cmd_status() {
   if [ -f "$cache_dir/metadata.txt" ]; then
     printf 'ctx:indexed_commit=%s\n' "$(read_field "$cache_dir/metadata.txt" commit 2>/dev/null || echo unknown)"
     printf 'ctx:indexer=%s\n' "$(read_field "$cache_dir/metadata.txt" indexer 2>/dev/null || echo unknown)"
+    printf 'ctx:cache_source=%s\n' "$(read_field "$cache_dir/metadata.txt" source 2>/dev/null || echo local)"
   fi
 
   if [ "$STATE" = "NO_COMMITS" ]; then
@@ -1031,14 +1056,22 @@ cmd_package() {
 # actually confirm an artifact wasn't corrupted or tampered with rather
 # than trusting the manifest blindly. Prints the manifest fields either
 # way so the artifact can be inspected even when verification fails.
-cmd_verify() {
-  local bundle_dir="${1:-}"
-  [ -n "$bundle_dir" ] || fail "Usage: repo-context.sh verify <bundle_dir>"
+# verify_bundle <bundle_dir>: recomputes every manifest-listed file's
+# sha256 and the overall bundle_sha256, comparing them against what
+# manifest.txt itself claims. Sets VERIFY_OK (1/0) and, on a mismatch,
+# VERIFY_REASON (missing-manifest/missing-file/checksum-mismatch/
+# bundle-hash-mismatch). Never prints anything itself, so both `verify`
+# (a human-facing report) and `fetch-baseline` (a silent compatibility
+# gate) can reuse the exact same check and decide separately what to
+# report.
+verify_bundle() {
+  local bundle_dir="$1"
   local manifest="$bundle_dir/manifest.txt"
+  VERIFY_REASON=""
   if [ ! -f "$manifest" ]; then
-    printf 'verify:status=missing-manifest\n'
-    warn "No manifest.txt found at $bundle_dir; this does not look like a repository-context published artifact."
-    return 1
+    VERIFY_OK=0
+    VERIFY_REASON="missing-manifest"
+    return 0
   fi
 
   local ok=1 line f recorded actual hash_lines=""
@@ -1051,14 +1084,14 @@ cmd_verify() {
         hash_lines="${hash_lines}${f}:${recorded}
 "
         if [ ! -f "$bundle_dir/$f" ]; then
-          warn "Missing file listed in manifest: $f"
           ok=0
+          VERIFY_REASON="missing-file"
           continue
         fi
         actual="$(digest_file "$bundle_dir/$f")"
         if [ "$actual" != "$recorded" ]; then
-          warn "Checksum mismatch for $f: manifest says $recorded, actual file hash is $actual"
           ok=0
+          VERIFY_REASON="checksum-mismatch"
         fi
         ;;
     esac
@@ -1068,9 +1101,23 @@ cmd_verify() {
   recorded_bundle_sha256="$(read_field "$manifest" bundle_sha256)"
   recomputed_bundle_sha256="$(digest_string "$(printf '%s' "$hash_lines" | LC_ALL=C sort)")"
   if [ "$recomputed_bundle_sha256" != "$recorded_bundle_sha256" ]; then
-    warn "bundle_sha256 in manifest does not match its own recorded per-file hashes; the manifest may have been tampered with."
     ok=0
+    VERIFY_REASON="bundle-hash-mismatch"
   fi
+  VERIFY_OK="$ok"
+}
+
+cmd_verify() {
+  local bundle_dir="${1:-}"
+  [ -n "$bundle_dir" ] || fail "Usage: repo-context.sh verify <bundle_dir>"
+  local manifest="$bundle_dir/manifest.txt"
+  if [ ! -f "$manifest" ]; then
+    printf 'verify:status=missing-manifest\n'
+    warn "No manifest.txt found at $bundle_dir; this does not look like a repository-context published artifact."
+    return 1
+  fi
+
+  verify_bundle "$bundle_dir"
 
   printf 'verify:artifact_schema_version=%s\n' "$(read_field "$manifest" artifact_schema_version)"
   printf 'verify:repo_origin_url=%s\n' "$(read_field "$manifest" repo_origin_url)"
@@ -1078,12 +1125,13 @@ cmd_verify() {
   printf 'verify:indexer=%s\n' "$(read_field "$manifest" indexer)"
   printf 'verify:cache_schema_version=%s\n' "$(read_field "$manifest" cache_schema_version)"
   printf 'verify:generated_at=%s\n' "$(read_field "$manifest" generated_at)"
-  printf 'verify:bundle_sha256=%s\n' "$recorded_bundle_sha256"
+  printf 'verify:bundle_sha256=%s\n' "$(read_field "$manifest" bundle_sha256)"
 
-  if [ "$ok" -eq 1 ]; then
+  if [ "$VERIFY_OK" -eq 1 ]; then
     printf 'verify:status=ok\n'
     return 0
   else
+    warn "Artifact at $bundle_dir failed integrity verification ($VERIFY_REASON)."
     printf 'verify:status=corrupt\n'
     return 1
   fi
@@ -1391,6 +1439,277 @@ cmd_ci_setup_status() {
   fi
 }
 
+# configured_feed_and_package <repo_root> [--pipeline-file <path>]
+# Reads the feed/package this repo already publishes to, straight out of
+# its own committed, ci-setup-managed pipeline block (default
+# azure-pipelines.yml), never a separate config file, so there's nothing
+# new for an engineer to maintain or for fetch-baseline to go out of sync
+# with. Sets CFG_FEED/CFG_PACKAGE and returns 0 only when both were found.
+configured_feed_and_package() {
+  local positional=() pipeline_rel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pipeline-file) pipeline_rel="${2:-}"; shift 2 ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  local root="${positional[0]:-}"
+  [ -n "$pipeline_rel" ] || pipeline_rel="azure-pipelines.yml"
+  local pipeline_file="$root/$pipeline_rel"
+  [ -f "$pipeline_file" ] || return 1
+
+  local block
+  block="$(awk -v begin="$CI_MARK_BEGIN" -v end="$CI_MARK_END" '
+    index($0, begin) { inblock=1; next }
+    index($0, end) { inblock=0; next }
+    inblock { print }
+  ' "$pipeline_file")"
+  [ -n "$block" ] || return 1
+
+  CFG_FEED="$(printf '%s\n' "$block" | grep -m1 'vstsFeedPublish:' | sed -E "s/^[[:space:]]*vstsFeedPublish:[[:space:]]*'?([^']*)'?[[:space:]]*$/\1/")"
+  CFG_PACKAGE="$(printf '%s\n' "$block" | grep -m1 'vstsFeedPackagePublish:' | sed -E "s/^[[:space:]]*vstsFeedPackagePublish:[[:space:]]*'?([^']*)'?[[:space:]]*$/\1/")"
+  [ -n "$CFG_FEED" ] && [ -n "$CFG_PACKAGE" ]
+}
+
+# detect_ado_organization_url <repo_root>: best-effort derivation of the
+# Azure DevOps organization/collection URL `az artifacts universal
+# download` needs, straight from this repo's own `origin` remote, so
+# fetch-baseline never has to ask anyone for it. Recognizes Azure DevOps
+# Services (dev.azure.com, both https and the ssh.dev.azure.com form, and
+# the legacy <org>.visualstudio.com form) and a conventional on-prem
+# Azure DevOps Server layout (.../tfs/<collection>/...). Prints nothing
+# and returns 1 if the remote doesn't look like any of those; callers
+# must then require an explicit --org rather than guess.
+detect_ado_organization_url() {
+  local root="$1" origin
+  origin="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
+  [ -n "$origin" ] || return 1
+
+  case "$origin" in
+    *@ssh.dev.azure.com:v3/*)
+      local rest="${origin#*ssh.dev.azure.com:v3/}"
+      printf 'https://dev.azure.com/%s' "${rest%%/*}"
+      return 0
+      ;;
+    https://*dev.azure.com/*)
+      local rest="${origin#*dev.azure.com/}"
+      rest="${rest#*@}"
+      printf 'https://dev.azure.com/%s' "${rest%%/*}"
+      return 0
+      ;;
+    https://*.visualstudio.com/*)
+      local host="${origin#https://}"
+      host="${host#*@}"
+      printf 'https://%s' "${host%%/*}"
+      return 0
+      ;;
+    *)
+      if printf '%s' "$origin" | grep -qE '^https?://[^/]+/tfs/'; then
+        printf '%s' "$origin" | sed -E 's#^(https?://[^/]+/tfs/[^/]+).*#\1#'
+        return 0
+      fi
+      return 1
+      ;;
+  esac
+}
+
+# cmd_fetch_baseline <repo_root> [--feed <Project/Feed>] [--org <url>]
+#                     [--package <name>] [--version <ver>] [--from <dir>]
+#                     [--force]
+# The consume-side counterpart to package/verify/ci-setup (PBI 297918):
+# reuse a baseline someone else's CI already published instead of
+# rebuilding one from scratch locally. Never a second indexer and never a
+# new cache format: on success this installs the exact same
+# metadata.txt/symbols.idx pair `rebuild` itself would have produced into
+# this repo's own cache directory, so every existing command (status,
+# lookup, diff, ...) picks it up completely unchanged. Anything that
+# isn't a clean, verified, matching-repo, matching-schema artifact is
+# rejected outright and the local cache is left exactly as it was,
+# leaving the normal rebuild/direct-source fallback to take over, same as
+# if fetch-baseline had never been called at all.
+#
+# --feed/--package default to whatever this repo's own ci-setup already
+# configured (read straight out of its committed pipeline file via
+# configured_feed_and_package), and --org defaults to whatever
+# detect_ado_organization_url can derive from the `origin` remote, so the
+# common case needs zero flags. --from <dir> skips the network call
+# entirely and adopts an already-retrieved bundle directly, the fully
+# offline-testable path, and also the realistic path for any CI step
+# that has already downloaded the artifact into a working directory.
+#
+# The actual `az artifacts universal download` call is the one piece of
+# this command this toolkit cannot verify without a live Azure DevOps
+# connection (same category as `UniversalPackages@0` on the publish
+# side): if `az` isn't installed, isn't logged in, or the call fails for
+# any reason, that's reported as `fetch:status=unavailable` and treated
+# exactly like "no baseline to offer", never a hard error.
+cmd_fetch_baseline() {
+  local positional=() feed="" org="" package="" version="*" from_dir="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --feed) feed="${2:-}"; shift 2 ;;
+      --org) org="${2:-}"; shift 2 ;;
+      --package) package="${2:-}"; shift 2 ;;
+      --version) version="${2:-}"; shift 2 ;;
+      --from) from_dir="${2:-}"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  local root
+  root="$(resolve_root_or_fail "${positional[0]:-}")" || exit 1
+  local cache_dir
+  cache_dir="$(cache_dir_for "$root")"
+
+  determine_state "$root" "$cache_dir"
+  if [ "$STATE" = "FRESH" ] && [ "$force" -ne 1 ]; then
+    printf 'fetch:status=skipped\n'
+    printf 'fetch:reason=local-already-fresh\n'
+    return 0
+  fi
+
+  mkdir -p "$(cache_home)"
+  local bundle_dir cleanup_bundle=0
+
+  if [ -n "$from_dir" ]; then
+    if [ ! -d "$from_dir" ]; then
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=from-dir-missing\n'
+      warn "No directory at $from_dir to fetch from."
+      return 1
+    fi
+    bundle_dir="$from_dir"
+  else
+    if [ -z "$feed" ] || [ -z "$package" ]; then
+      if configured_feed_and_package "$root"; then
+        [ -z "$feed" ] && feed="$CFG_FEED"
+        [ -z "$package" ] && package="$CFG_PACKAGE"
+      fi
+    fi
+    if [ -z "$feed" ]; then
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=no-feed-configured\n'
+      warn "No --feed given and this repo's pipeline isn't ci-setup'd yet; pass --feed <Project/Feed> explicitly, or run ci-setup first."
+      return 1
+    fi
+    [ -n "$package" ] || package="repository-context-baseline-$(basename "$root")"
+    if [ -z "$org" ]; then
+      org="$(detect_ado_organization_url "$root")"
+    fi
+    if [ -z "$org" ]; then
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=no-organization-detected\n'
+      warn "Could not derive an Azure DevOps organization URL from this repo's origin remote; pass --org <https://dev.azure.com/YourOrg> explicitly."
+      return 1
+    fi
+    if ! command -v az >/dev/null 2>&1; then
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=az-cli-missing\n'
+      warn "Azure CLI ('az') is not installed; cannot fetch a published baseline."
+      return 1
+    fi
+
+    case "$feed" in
+      */*) : ;;
+      *)
+        printf 'fetch:status=unavailable\n'
+        printf 'fetch:reason=invalid-feed-format\n'
+        warn "--feed must be '<Project>/<Feed>', got: $feed"
+        return 1
+        ;;
+    esac
+    local project="${feed%%/*}" feed_name="${feed#*/}"
+
+    local staging errlog
+    staging="$(mktemp -d "$(cache_home)/.fetch-staging.XXXXXX")" || {
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=staging-failed\n'
+      return 1
+    }
+    errlog="$(mktemp "$(cache_home)/.fetch-err.XXXXXX")" || {
+      rm -rf "$staging"
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=staging-failed\n'
+      return 1
+    }
+    if ! az artifacts universal download \
+        --organization "$org" --project "$project" --feed "$feed_name" \
+        --name "$package" --version "$version" --path "$staging" \
+        >/dev/null 2>"$errlog"; then
+      warn "az artifacts universal download failed: $(cat "$errlog" 2>/dev/null | tail -n1)"
+      rm -rf "$staging"; rm -f "$errlog"
+      printf 'fetch:status=unavailable\n'
+      printf 'fetch:reason=download-failed\n'
+      return 1
+    fi
+    rm -f "$errlog"
+    bundle_dir="$staging"
+    cleanup_bundle=1
+  fi
+
+  verify_bundle "$bundle_dir"
+  if [ "$VERIFY_OK" -ne 1 ]; then
+    [ "$cleanup_bundle" -eq 1 ] && rm -rf "$bundle_dir"
+    printf 'fetch:status=rejected\n'
+    printf 'fetch:reason=%s\n' "${VERIFY_REASON:-corrupt}"
+    warn "Published artifact at $bundle_dir failed integrity verification ($VERIFY_REASON); not adopting it."
+    return 1
+  fi
+
+  local manifest="$bundle_dir/manifest.txt"
+  local m_schema m_cache_schema m_origin m_commit m_indexer my_origin
+  m_schema="$(read_field "$manifest" artifact_schema_version)"
+  m_cache_schema="$(read_field "$manifest" cache_schema_version)"
+  m_origin="$(read_field "$manifest" repo_origin_url)"
+  m_commit="$(read_field "$manifest" commit)"
+  m_indexer="$(read_field "$manifest" indexer)"
+  my_origin="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
+  [ -z "$my_origin" ] && my_origin="none"
+
+  if [ "$m_schema" != "$ARTIFACT_SCHEMA_VERSION" ] || [ "$m_cache_schema" != "$CACHE_SCHEMA_VERSION" ]; then
+    [ "$cleanup_bundle" -eq 1 ] && rm -rf "$bundle_dir"
+    printf 'fetch:status=rejected\n'
+    printf 'fetch:reason=incompatible-schema\n'
+    warn "Published artifact's schema (artifact=$m_schema, cache=$m_cache_schema) doesn't match this script (artifact=$ARTIFACT_SCHEMA_VERSION, cache=$CACHE_SCHEMA_VERSION); not adopting it."
+    return 1
+  fi
+
+  if [ "$m_origin" != "$my_origin" ]; then
+    [ "$cleanup_bundle" -eq 1 ] && rm -rf "$bundle_dir"
+    printf 'fetch:status=rejected\n'
+    printf 'fetch:reason=repo-mismatch\n'
+    warn "Published artifact is for a different repository ($m_origin), not this one ($my_origin); not adopting it."
+    return 1
+  fi
+
+  local adopt_staging
+  adopt_staging="$(mktemp -d "$(cache_home)/.adopt-staging.XXXXXX")" || fail "Could not create a staging directory to adopt into"
+  grep -v '^source: ' "$bundle_dir/metadata.txt" > "$adopt_staging/metadata.txt"
+  printf 'source: published\n' >> "$adopt_staging/metadata.txt"
+  [ -f "$bundle_dir/symbols.idx" ] && cp "$bundle_dir/symbols.idx" "$adopt_staging/symbols.idx"
+  rm -rf "$cache_dir"
+  mv "$adopt_staging" "$cache_dir"
+  [ "$cleanup_bundle" -eq 1 ] && rm -rf "$bundle_dir"
+
+  local head relation
+  head="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo none)"
+  if [ "$m_commit" = "$head" ]; then
+    relation="exact"
+  elif git -C "$root" merge-base --is-ancestor "$m_commit" "$head" 2>/dev/null; then
+    relation="ancestor-of-head"
+  else
+    relation="diverged"
+  fi
+
+  printf 'fetch:status=adopted\n'
+  printf 'fetch:repo_root=%s\n' "$root"
+  printf 'fetch:artifact_commit=%s\n' "$m_commit"
+  printf 'fetch:head=%s\n' "$head"
+  printf 'fetch:relation_to_head=%s\n' "$relation"
+  printf 'fetch:indexer=%s\n' "$m_indexer"
+  return 0
+}
+
 show_help() {
   cat <<'EOF'
 repo-context.sh — source-grounded repository symbol/reference lookup
@@ -1430,6 +1749,17 @@ Usage:
   repo-context.sh ci-setup-status [repo_root] [--pipeline-file <path>]
                                                   Report whether ci-setup has already configured this repo
                                                   (read-only).
+  repo-context.sh fetch-baseline [repo_root] [--feed <Project/Feed>] [--org <url>]
+                                 [--package <name>] [--version <ver>] [--from <dir>] [--force]
+                                                  Adopt a compatible published baseline (verified, matching
+                                                  repo and schema) as this repo's local cache instead of
+                                                  rebuilding one. --feed/--package default to whatever
+                                                  ci-setup already configured for this repo; --org defaults
+                                                  to whatever can be derived from the origin remote.
+                                                  --from <dir> adopts an already-downloaded bundle directly,
+                                                  skipping the network call. Rejects (and leaves the local
+                                                  cache untouched) anything corrupt, schema-incompatible, or
+                                                  published for a different repository.
   repo-context.sh --help
 
 repo_root defaults to the git repo enclosing the current directory.
@@ -1457,6 +1787,7 @@ case "$ACTION" in
   verify)        cmd_verify "${ARGS[@]}" ;;
   ci-setup)        cmd_ci_setup "${ARGS[@]}" ;;
   ci-setup-status) cmd_ci_setup_status "${ARGS[@]}" ;;
+  fetch-baseline)  cmd_fetch_baseline "${ARGS[@]}" ;;
   --help|-h|help|"") show_help ;;
   *) fail "Unknown command: $ACTION (see --help)" ;;
 esac

@@ -36,6 +36,11 @@ too, just without requiring the IDE.
   it. Note: stock macOS ships an unrelated BSD `ctags` under the same
   name; the skill only uses the real Universal Ctags when it's actually
   installed.
+- **Optional:** the [Azure CLI](https://learn.microsoft.com/cli/azure/)
+  (`az`, with `az login` already done) lets `repository-context` adopt a
+  repository's already-published baseline instead of rebuilding one
+  locally. Without it, that step is simply skipped and the toolkit falls
+  back to a local rebuild exactly as it would anyway.
 
 **Native Windows (PowerShell/cmd, no WSL) is not supported.** `agentic-eng`
 is a bash script and the auto-PATH step writes to `~/.zshrc`/`~/.bashrc` —
@@ -159,7 +164,18 @@ runs), a real commit staying fast with the hook installed, `refresh-async`
 never failing even against a non-Git path, a committed symbol move being
 picked up automatically by the installed hook with nobody running
 `rebuild` by hand, and `refresh` correctly no-op'ing when the cache is
-already current.
+already current. It also exercises `fetch-baseline`: adopting a verified,
+matching published artifact as the local cache and immediately returning
+`confidence=confirmed` lookups from it; skipping adoption when the local
+cache is already current rather than discarding a good index; rejecting
+(and never touching the local cache for) an artifact published for a
+different repository, a corrupted one, and one with a mismatched schema
+version; reporting a specific, actionable reason rather than failing
+opaquely when nothing is retrievable at all; an uncommitted local change
+still surfacing on top of an adopted baseline, never hidden by it; and
+the whole thing working with zero flags, auto-detecting the feed,
+package, and organization straight from a repository's own committed
+pipeline and `origin` remote.
 
 Several things once listed here as unverified are now confirmed directly,
 against the real thing, not a fixture or a simulation:
@@ -220,6 +236,14 @@ which this repo's own dev environment doesn't have. Do this once, manually:
    the index, not just the always-on diff overlay. If that repo already
    has its own Git hooks (Husky or otherwise), confirm they still run
    afterward too.
+7. In a repository that already has `ci-setup` configured and at least
+   one published baseline, with the Azure CLI installed and logged in,
+   delete that repository's local cache (or just use a fresh clone) and
+   run `repo-context.sh fetch-baseline "<repo-root>"` with no flags.
+   Confirm it reports `fetch:status=adopted` and that a subsequent
+   `status` reports `ctx:cache_source=published`. This is the one piece
+   of the whole feature neither smoke test can exercise, since it's the
+   actual network call to Azure Artifacts.
 
 ## Uninstall
 
