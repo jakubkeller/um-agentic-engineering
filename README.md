@@ -29,13 +29,14 @@ repository — nothing to import or configure per-repo:
 
 - `/repo-snapshot` — summarizes the current repo: branch, status, recent
   commits.
-- `repository-context` — type `/repository-context` followed by your
-  question (e.g. `/repository-context where is calculate_discount
-  defined?`, `/repository-context what references OrderValidator?`).
-  Confirmed against the real IDE: plain conversational phrasing, with no
-  `/command`, does **not** reliably invoke this skill, Kiro answers on its
-  own by grepping instead, with no file:line evidence or freshness
-  labeling. Always use the explicit command.
+- `repository-context` — just ask a natural-language question about the
+  codebase (e.g. "where is `calculate_discount` defined?", "how are
+  service clients typically structured?"). Confirmed against the real
+  IDE: this works out of the box once `agentic-eng init` has run in that
+  repo, since steering (always loaded) actively watches for this kind of
+  question and runs the lookup itself, rather than depending on Kiro's
+  own skill-matching alone. `/repository-context <question>` also works
+  as an explicit, equally reliable alternative.
   Answers include file:line evidence, the indexed commit, whether the
   working tree is dirty/stale, and whether each result is
   `confidence=confirmed` (a verified definition) or `confidence=inferred`

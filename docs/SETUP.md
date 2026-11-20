@@ -161,14 +161,26 @@ picked up automatically by the installed hook with nobody running
 `rebuild` by hand, and `refresh` correctly no-op'ing when the cache is
 already current.
 
-Two things once listed here as unverified are now confirmed directly,
-against the real thing, not a fixture: `repo-context.sh`'s Universal Ctags
-invocation (`ctags -x -L <filelist>`) was run against a real Universal
-Ctags binary and returned correct, confirmed results; and Kiro does
-discover and run this skill, but only via the explicit `/repository-context`
-command, never from plain conversational phrasing, which was tried
-against the real IDE and did not invoke it (it answered by grepping
-instead, with no file:line evidence). The README reflects this.
+Several things once listed here as unverified are now confirmed directly,
+against the real thing, not a fixture or a simulation:
+
+- `repo-context.sh`'s Universal Ctags invocation (`ctags -x -L <filelist>`)
+  was run against a real Universal Ctags binary and returned correct,
+  confirmed results.
+- Kiro does discover and run this skill from plain conversational
+  phrasing, no `/command` needed, once `agentic-eng init` has installed
+  both the skill and the always-loaded steering file in that repo. The
+  explicit `/repository-context <question>` form also works.
+- The first-time-per-repository steering behavior (index if missing,
+  install Git hooks if missing, offer to wire up CI publishing) was
+  watched firing for real, unprompted, on a repo that had never been
+  indexed before, exactly as designed.
+- Answers grounded this way catch things a plain code search can't: real
+  cross-file inconsistencies (a doc contradicting the actual code, a
+  dependency-version mismatch, duplicated logic across two branches of
+  the same function), not just symbol locations.
+
+The README reflects all of this.
 
 What neither script *can* confirm is that the real tag-based resolution
 works against the real GitHub remote, since that requires the real remote,
@@ -180,10 +192,10 @@ which this repo's own dev environment doesn't have. Do this once, manually:
    `/repo-snapshot` in the chat and confirm it reports that repository's own
    branch/status/commits — proving one global install serves both, with no
    `.kiro/skills/` committed into either repo.
-3. In one of those repositories, type `/repository-context` followed by a
-   symbol question (e.g. `/repository-context where is <some function>
-   defined`), not plain conversational phrasing alone, that does not
-   reliably invoke it. Confirm it returns correct file:line evidence plus the
+3. In one of those repositories, just ask a plain question (no `/command`
+   needed, confirmed working this way): "where is `<some function>`
+   defined?" or a broader one like "how are service clients typically
+   structured?". Confirm it returns correct file:line evidence plus the
    repository's revision and dirty/stale/fallback flags. If Universal Ctags
    is installed, confirm at least one result is labeled
    `confidence=confirmed`; otherwise confirm it clearly reports
