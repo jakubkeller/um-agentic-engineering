@@ -12,8 +12,13 @@ cd um-agentic-engineering
 ./install.sh
 ```
 
-Day-to-day, once set up: `agentic-eng install|update|version|rollback|uninstall`.
-See [docs/SETUP.md](docs/SETUP.md) for prerequisites, verification, and
+Then, from inside whichever repo you actually want set up: `agentic-eng init`
+(installs the toolkit if that's not done yet, indexes the repo, and turns on
+automatic refresh after commits/merges). Day-to-day after that, there are
+only two calls that matter: `agentic-eng init` (again, any time, it's
+idempotent) and `agentic-eng update`. `version`/`rollback`/`uninstall` exist
+for recovery but aren't part of normal use. See
+[docs/SETUP.md](docs/SETUP.md) for prerequisites, verification, and
 uninstall, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 for common failure recovery.
 
@@ -24,9 +29,14 @@ repository — nothing to import or configure per-repo:
 
 - `/repo-snapshot` — summarizes the current repo: branch, status, recent
   commits.
-- `repository-context` — ask a natural-language question about the
-  codebase (e.g. "where is `calculate_discount` defined?", "what
-  references `OrderValidator`?") and Kiro matches it to this skill.
+- `repository-context` — just ask a natural-language question about the
+  codebase (e.g. "where is `calculate_discount` defined?", "how are
+  service clients typically structured?"). Confirmed against the real
+  IDE: this works out of the box once `agentic-eng init` has run in that
+  repo, since steering (always loaded) actively watches for this kind of
+  question and runs the lookup itself, rather than depending on Kiro's
+  own skill-matching alone. `/repository-context <question>` also works
+  as an explicit, equally reliable alternative.
   Answers include file:line evidence, the indexed commit, whether the
   working tree is dirty/stale, and whether each result is
   `confidence=confirmed` (a verified definition) or `confidence=inferred`
@@ -47,11 +57,7 @@ repository — nothing to import or configure per-repo:
 
 Both skills are read-only (`install-hooks` only ever touches a
 repository's own local, untracked Git hooks, coexisting with any existing
-hook content such as Husky's rather than replacing it). **Unverified:**
-whether Kiro invokes a skill
-purely from conversational phrasing (vs. a typed `/command`) hasn't been
-confirmed against the real IDE from this repo's own dev environment — see
-`docs/SETUP.md`'s Verify section.
+hook content such as Husky's rather than replacing it).
 
 You shouldn't need to discover `repository-context` yourself the first
 time: a steering file (`toolkit/steering/repository-context-awareness.md`)
@@ -65,9 +71,13 @@ so the cache keeps catching up on its own after that.
 
 - `toolkit/` — the global, installable content (skills, steering, reserved
   agents). See [toolkit/README.md](toolkit/README.md).
-- `agentic-eng` — the CLI: install/update/version/rollback/uninstall.
+- `agentic-eng` — the CLI. Day to day: `init`, `update` (`install` is the
+  same command as `init`, just the older name). Recovery:
+  version/rollback/uninstall.
 - `install.sh` — day-zero bootstrap wrapper (`agentic-eng` can't be on PATH
-  before it's ever been run once); just calls `agentic-eng install`.
+  before it's ever been run once); just calls `agentic-eng install`
+  (= `init`). Run `agentic-eng init` directly afterward, from the repo you
+  actually want set up.
 - `scripts/smoke-test.sh` — repeatable, automated, fully-offline verification.
 - `scripts/repo-context-smoke-test.sh` — same, for the `repository-context`
   skill's `repo-context.sh`.

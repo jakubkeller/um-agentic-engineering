@@ -673,6 +673,317 @@ printf '%s' "$RUN_OUT" | grep -q '^ctx:index_state=fresh$' \
   && ok "refresh reports fresh (no-op) instead of rebuilding when the cache already matches HEAD" \
   || bad "refresh did not no-op on an already-fresh cache: $RUN_OUT"
 
+#############################################################################
+echo "--- scenario: package produces a checksummed artifact for the exact FRESH commit, and verify confirms it (PBI 297919 AC1, AC2, AC4) ---"
+#############################################################################
+PUBREPO="$(new_tmp_dir)/pubrepo"
+init_fixture_repo "$PUBREPO"
+printf 'function publish_target() {\n  echo "v1"\n}\n' > "$PUBREPO/a.sh"
+( cd "$PUBREPO" && git add -A && git_q commit -m "initial" )
+PUBHOME="$(new_tmp_dir)"
+PUB_SHA="$(cd "$PUBREPO" && git rev-parse HEAD)"
+PUBOUT="$(new_tmp_dir)/baseline"
+
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$PUBHOME" bash "$REPO_CTX" rebuild --force "$PUBREPO" >/dev/null 2>&1
+run "$PUBHOME" package "$PUBREPO" "$PUBOUT"
+[ "$RUN_EXIT" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q "^pkg:status=ok$" \
+  && ok "package reports status=ok for a fresh, clean commit" \
+  || bad "package did not report success for a fresh, clean commit: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q "^pkg:commit=${PUB_SHA}$" \
+  && ok "the packaged artifact identifies the exact commit it was built from" \
+  || bad "the packaged artifact did not identify the correct commit: $RUN_OUT"
+[ -f "$PUBOUT/manifest.txt" ] && [ -f "$PUBOUT/symbols.idx" ] \
+  && ok "the artifact bundle contains a manifest and the index output it was built from" \
+  || bad "expected manifest.txt and symbols.idx in the packaged bundle, found: $(ls "$PUBOUT" 2>&1)"
+
+VERIFY_OUT="$(bash "$REPO_CTX" verify "$PUBOUT" 2>&1)"
+VERIFY_EXIT=$?
+printf '%s' "$VERIFY_OUT" | grep -q "^verify:status=ok$" && [ "$VERIFY_EXIT" -eq 0 ] \
+  && ok "verify confirms an untampered artifact is ok" \
+  || bad "verify did not confirm a freshly packaged artifact as ok: $VERIFY_OUT"
+printf '%s' "$VERIFY_OUT" | grep -q "^verify:commit=${PUB_SHA}$" \
+  && ok "an engineer can inspect the retrieved artifact's commit without re-running package" \
+  || bad "verify did not report the expected commit for inspection: $VERIFY_OUT"
+
+#############################################################################
+echo "--- scenario: verify detects a tampered/corrupted artifact rather than trusting the manifest blindly (PBI 297919 AC2, AC4) ---"
+#############################################################################
+echo "tampered" >> "$PUBOUT/symbols.idx"
+VERIFY_OUT="$(bash "$REPO_CTX" verify "$PUBOUT" 2>&1)"
+VERIFY_EXIT=$?
+printf '%s' "$VERIFY_OUT" | grep -q "^verify:status=corrupt$" && [ "$VERIFY_EXIT" -ne 0 ] \
+  && ok "verify reports corrupt and fails after the artifact's index file is tampered with" \
+  || bad "verify did not detect a tampered artifact: $VERIFY_OUT"
+
+#############################################################################
+echo "--- scenario: package refuses when there is no FRESH index to publish, rather than inventing an artifact (PBI 297919 AC1 correctness) ---"
+#############################################################################
+NEVERINDEXED="$(new_tmp_dir)/never-indexed"
+init_fixture_repo "$NEVERINDEXED"
+( cd "$NEVERINDEXED" && echo x > f.sh && git add -A && git_q commit -m "only commit" )
+NEVERHOME="$(new_tmp_dir)"
+run "$NEVERHOME" package "$NEVERINDEXED" "$(new_tmp_dir)/shouldnotexist"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "not FRESH" \
+  && ok "package refuses to publish a repository that was never indexed, instead of fabricating an artifact" \
+  || bad "package should have refused a never-indexed repository: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: package refuses on a dirty working tree, and a failed publish never replaces the last known-good artifact (PBI 297919 AC3) ---"
+#############################################################################
+GOODOUT="$(new_tmp_dir)/baseline-good"
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$PUBHOME" bash "$REPO_CTX" package --force "$PUBREPO" "$GOODOUT" >/dev/null 2>&1
+GOOD_SHA_BEFORE="$(bash "$REPO_CTX" verify "$GOODOUT" 2>&1 | grep '^verify:commit=' | sed 's/^verify:commit=//')"
+
+echo "uncommitted change" >> "$PUBREPO/a.sh"
+run "$PUBHOME" package --force "$PUBREPO" "$GOODOUT"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "dirty" \
+  && ok "package refuses to publish while the working tree is dirty" \
+  || bad "package should have refused a dirty working tree: $RUN_OUT"
+
+GOOD_SHA_AFTER="$(bash "$REPO_CTX" verify "$GOODOUT" 2>&1 | grep '^verify:commit=' | sed 's/^verify:commit=//')"
+[ "$GOOD_SHA_AFTER" = "$GOOD_SHA_BEFORE" ] \
+  && ok "the previously published artifact is untouched after the failed (dirty-tree) publish attempt" \
+  || bad "the last known-good artifact changed after a failed publish attempt (was $GOOD_SHA_BEFORE, now $GOOD_SHA_AFTER)"
+( cd "$PUBREPO" && git checkout -q -- a.sh )
+
+#############################################################################
+echo "--- scenario: package refuses to silently overwrite an already-published artifact without --force (immutability) ---"
+#############################################################################
+run "$PUBHOME" package "$PUBREPO" "$PUBOUT"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "already-packaged\|pass --force" \
+  && ok "package refuses to overwrite an already-published artifact at the same path without --force" \
+  || bad "package should have refused to silently overwrite an existing artifact: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: ci-setup wires rebuild/package/verify/publish into a repo with no azure-pipelines.yml yet (PBI 297919) ---"
+#############################################################################
+CISETUPREPO="$(new_tmp_dir)/cisetuprepo"
+init_fixture_repo "$CISETUPREPO"
+echo x > "$CISETUPREPO/f.sh"
+( cd "$CISETUPREPO" && git add -A && git_q commit -m "initial" )
+CISETUPHOME="$(new_tmp_dir)"
+
+run "$CISETUPHOME" ci-setup "$CISETUPREPO" --feed "SomeProject/SomeFeed"
+[ "$RUN_EXIT" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q "^ci:status=created$" \
+  && ok "ci-setup creates azure-pipelines.yml when none exists" \
+  || bad "ci-setup did not report creating a new pipeline file: $RUN_OUT"
+[ -f "$CISETUPREPO/azure-pipelines.yml" ] \
+  && ok "azure-pipelines.yml now exists in the repo" \
+  || bad "ci-setup did not actually write azure-pipelines.yml"
+grep -q "SomeProject/SomeFeed" "$CISETUPREPO/azure-pipelines.yml" \
+  && ok "the generated pipeline references the feed that was passed in" \
+  || bad "the generated pipeline does not reference the requested feed"
+grep -q "repository-context-baseline-cisetuprepo" "$CISETUPREPO/azure-pipelines.yml" \
+  && ok "the package name defaults to repository-context-baseline-<repo-name> when --package is omitted" \
+  || bad "the generated pipeline did not default the package name as expected"
+[ -x "$CISETUPREPO/.ci/repository-context/repo-context.sh" ] \
+  && ok "ci-setup vendors an executable copy of repo-context.sh into the target repo" \
+  || bad "ci-setup did not vendor repo-context.sh into .ci/repository-context/"
+cmp -s "$CISETUPREPO/.ci/repository-context/repo-context.sh" "$REPO_CTX" \
+  && ok "the vendored copy is identical to the running script" \
+  || bad "the vendored copy does not match the running repo-context.sh"
+grep -q 'Build.SourcesDirectory)/.ci/repository-context/repo-context.sh' "$CISETUPREPO/azure-pipelines.yml" \
+  && ok "the generated pipeline calls the vendored script under Build.SourcesDirectory, not an assumed ~/.kiro path" \
+  || bad "the generated pipeline does not reference the vendored script path"
+! grep -q 'Pipeline.Workspace' "$CISETUPREPO/azure-pipelines.yml" \
+  && ok "the generated pipeline has no leftover reference to an assumed pre-installed toolkit path" \
+  || bad "the generated pipeline still references Pipeline.Workspace, which a fresh agent won't have populated"
+grep -q "ensure Universal Ctags is available" "$CISETUPREPO/azure-pipelines.yml" \
+  && ok "the generated pipeline provisions Universal Ctags on the agent before indexing" \
+  || bad "the generated pipeline does not ensure Universal Ctags is available"
+
+run "$CISETUPHOME" ci-setup-status "$CISETUPREPO"
+printf '%s' "$RUN_OUT" | grep -q "^ci:publish_configured=yes$" \
+  && ok "ci-setup-status reports configured=yes after ci-setup has run" \
+  || bad "ci-setup-status did not report the repo as configured: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: the vendored script actually works end to end from a fresh checkout with no toolkit pre-installed (PBI 297919) ---"
+#############################################################################
+# Simulates what the generated pipeline's steps actually do on a real agent:
+# a plain git clone (the only thing any agent, hosted or self-hosted, is
+# guaranteed to have) plus a completely fresh, empty AGENTIC_TOOLKIT_HOME
+# standing in for "nothing pre-installed." If the vendored copy or the
+# Build.SourcesDirectory-relative path were wrong, this is what would catch
+# it, not just checking that the generated YAML text looks right. git
+# clone only picks up committed content, so ci-setup's output has to
+# actually be committed first, same as a real engineer would have to do.
+( cd "$CISETUPREPO" && git_q add -A && git_q commit -m "wire up repository-context publish" )
+AGENTCHECKOUT="$(new_tmp_dir)/agent-checkout"
+( cd "$(dirname "$AGENTCHECKOUT")" && git clone -q "$CISETUPREPO" "$(basename "$AGENTCHECKOUT")" ) \
+  || bad "could not clone the ci-setup fixture repo to simulate a fresh agent checkout"
+FRESHAGENTHOME="$(new_tmp_dir)"
+
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FRESHAGENTHOME" bash "$AGENTCHECKOUT/.ci/repository-context/repo-context.sh" rebuild --force "$AGENTCHECKOUT" >/tmp/agentrebuild.$$ 2>&1
+AGENT_REBUILD_OUT="$(cat /tmp/agentrebuild.$$)"; rm -f /tmp/agentrebuild.$$
+printf '%s' "$AGENT_REBUILD_OUT" | grep -q '^ctx:index_state=rebuilt$' \
+  && ok "the vendored script, run from a fresh agent-like checkout, actually rebuilds a real index" \
+  || bad "the vendored script failed to rebuild from a simulated fresh agent: $AGENT_REBUILD_OUT"
+
+AGENTSTAGING="$(new_tmp_dir)/repo-context-baseline"
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FRESHAGENTHOME" bash "$AGENTCHECKOUT/.ci/repository-context/repo-context.sh" package "$AGENTCHECKOUT" "$AGENTSTAGING" >/tmp/agentpkg.$$ 2>&1
+AGENT_PKG_OUT="$(cat /tmp/agentpkg.$$)"; rm -f /tmp/agentpkg.$$
+printf '%s' "$AGENT_PKG_OUT" | grep -q '^pkg:status=ok$' \
+  && ok "the vendored script, run from a fresh agent-like checkout, actually packages a real artifact" \
+  || bad "the vendored script failed to package from a simulated fresh agent: $AGENT_PKG_OUT"
+
+AGENT_VERIFY_OUT="$(bash "$AGENTCHECKOUT/.ci/repository-context/repo-context.sh" verify "$AGENTSTAGING" 2>&1)"
+printf '%s' "$AGENT_VERIFY_OUT" | grep -q '^verify:status=ok$' \
+  && ok "the vendored script, run from a fresh agent-like checkout, verifies the artifact it just built" \
+  || bad "the vendored script failed to verify from a simulated fresh agent: $AGENT_VERIFY_OUT"
+
+#############################################################################
+echo "--- scenario: re-running ci-setup replaces only its own managed block, never duplicates it (PBI 297919) ---"
+#############################################################################
+run "$CISETUPHOME" ci-setup "$CISETUPREPO" --feed "OtherProject/OtherFeed"
+[ "$RUN_EXIT" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q "^ci:status=updated$" \
+  && ok "re-running ci-setup against its own output reports an update, not a fresh create" \
+  || bad "re-running ci-setup did not report status=updated: $RUN_OUT"
+[ "$(grep -c "repository-context publish (managed block)" "$CISETUPREPO/azure-pipelines.yml")" -eq 1 ] \
+  && ok "the managed block appears exactly once after re-running ci-setup" \
+  || bad "the managed block was duplicated instead of replaced: $(grep -c "repository-context publish (managed block)" "$CISETUPREPO/azure-pipelines.yml") occurrences"
+grep -q "OtherProject/OtherFeed" "$CISETUPREPO/azure-pipelines.yml" \
+  && ! grep -q "SomeProject/SomeFeed" "$CISETUPREPO/azure-pipelines.yml" \
+  && ok "the new feed replaces the old one instead of both being present" \
+  || bad "re-running ci-setup left stale content behind in azure-pipelines.yml"
+
+#############################################################################
+echo "--- scenario: ci-setup refuses to guess at a multi-stage pipeline file with no single top-level steps: key (PBI 297919) ---"
+#############################################################################
+MULTISTAGEREPO="$(new_tmp_dir)/multistagerepo"
+init_fixture_repo "$MULTISTAGEREPO"
+echo x > "$MULTISTAGEREPO/f.sh"
+( cd "$MULTISTAGEREPO" && git add -A && git_q commit -m "initial" )
+cat > "$MULTISTAGEREPO/azure-pipelines.yml" <<'MULTIEOF'
+stages:
+  - stage: Build
+    jobs:
+      - job: BuildJob
+        steps:
+          - script: echo build
+  - stage: Test
+    jobs:
+      - job: TestJob
+        steps:
+          - script: echo test
+MULTIEOF
+BEFORE_COPY="$(new_tmp_dir)/before.yml"
+cp "$MULTISTAGEREPO/azure-pipelines.yml" "$BEFORE_COPY"
+run "$CISETUPHOME" ci-setup "$MULTISTAGEREPO" --feed "SomeProject/SomeFeed"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "top-level 'steps:'" \
+  && ok "ci-setup refuses a multi-stage pipeline file instead of guessing where steps live" \
+  || bad "ci-setup should have refused a multi-stage pipeline file: $RUN_OUT"
+cmp -s "$MULTISTAGEREPO/azure-pipelines.yml" "$BEFORE_COPY" \
+  && ok "the multi-stage pipeline file is left completely untouched after the refusal" \
+  || bad "ci-setup modified a pipeline file it should have refused to touch"
+
+#############################################################################
+echo "--- scenario: ci-setup --pipeline-file targets a non-default path instead of creating a stray azure-pipelines.yml (PBI 297919) ---"
+#############################################################################
+ALTPATHREPO="$(new_tmp_dir)/altpathrepo"
+init_fixture_repo "$ALTPATHREPO"
+echo x > "$ALTPATHREPO/f.sh"
+( cd "$ALTPATHREPO" && git add -A && git_q commit -m "initial" )
+ALTPATHHOME="$(new_tmp_dir)"
+
+run "$ALTPATHHOME" ci-setup "$ALTPATHREPO" --feed "SomeProject/SomeFeed" --pipeline-file "pipelines/ci.yml"
+[ "$RUN_EXIT" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q "^ci:file=.*/pipelines/ci\.yml$" \
+  && ok "ci-setup writes to the --pipeline-file path instead of the default" \
+  || bad "ci-setup did not honor --pipeline-file: $RUN_OUT"
+[ -f "$ALTPATHREPO/pipelines/ci.yml" ] \
+  && ok "the custom-path pipeline file was actually created" \
+  || bad "ci-setup did not create pipelines/ci.yml"
+[ ! -f "$ALTPATHREPO/azure-pipelines.yml" ] \
+  && ok "no stray default-path azure-pipelines.yml was created alongside the custom path" \
+  || bad "ci-setup created an unwanted azure-pipelines.yml even though --pipeline-file was given"
+
+run "$ALTPATHHOME" ci-setup-status "$ALTPATHREPO" --pipeline-file "pipelines/ci.yml"
+printf '%s' "$RUN_OUT" | grep -q "^ci:publish_configured=yes$" \
+  && ok "ci-setup-status honors --pipeline-file and finds the configured custom-path pipeline" \
+  || bad "ci-setup-status did not find the custom-path pipeline: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: ci-setup matches an existing hand-written pipeline's own indentation, not a hardcoded one (PBI 297919) ---"
+#############################################################################
+HANDWRITTENREPO="$(new_tmp_dir)/handwrittenrepo"
+init_fixture_repo "$HANDWRITTENREPO"
+cat > "$HANDWRITTENREPO/azure-pipelines.yml" <<'HANDEOF'
+trigger:
+  branches:
+    include: [ main ]
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- script: echo hello
+  displayName: 'say hello'
+HANDEOF
+( cd "$HANDWRITTENREPO" && git add -A && git_q commit -m "initial" )
+HANDWRITTENHOME="$(new_tmp_dir)"
+
+run "$HANDWRITTENHOME" ci-setup "$HANDWRITTENREPO" --feed "SomeProject/SomeFeed"
+[ "$RUN_EXIT" -eq 0 ] \
+  && ok "ci-setup succeeds against a realistic hand-written single-job pipeline" \
+  || bad "ci-setup failed against a hand-written pipeline: $RUN_OUT"
+grep -q "^- bash: |$" "$HANDWRITTENREPO/azure-pipelines.yml" \
+  && ok "the inserted block matches the existing file's own 0-space step indentation, not a hardcoded 2-space one" \
+  || bad "the inserted block did not match the existing file's indentation: $(cat "$HANDWRITTENREPO/azure-pipelines.yml")"
+grep -q "^- script: echo hello$" "$HANDWRITTENREPO/azure-pipelines.yml" \
+  && ok "the pre-existing step is left exactly as it was" \
+  || bad "ci-setup altered a pre-existing, unrelated step"
+python3 -c "import yaml,sys; d=yaml.safe_load(open('$HANDWRITTENREPO/azure-pipelines.yml')); sys.exit(0 if len(d['steps'])==6 else 1)" 2>/dev/null \
+  && ok "the resulting file is valid YAML with the expected total step count" \
+  || bad "the resulting file is not valid YAML, or didn't end up with 5 steps (python3/pyyaml unavailable, or a real structural bug)"
+
+#############################################################################
+echo "--- scenario: ci-setup refuses a pipeline with trigger: none instead of wiring a publish step that would never run (PBI 297919) ---"
+#############################################################################
+TRIGGERNONEREPO="$(new_tmp_dir)/triggernonerepo"
+init_fixture_repo "$TRIGGERNONEREPO"
+cat > "$TRIGGERNONEREPO/azure-pipelines.yml" <<'TRIGEOF'
+trigger: none
+pr:
+  branches:
+    include: [ main ]
+steps:
+- script: echo validate
+TRIGEOF
+( cd "$TRIGGERNONEREPO" && git add -A && git_q commit -m "initial" )
+TRIGGERNONEHOME="$(new_tmp_dir)"
+BEFORE_TRIGGER_COPY="$(new_tmp_dir)/before-trigger.yml"
+cp "$TRIGGERNONEREPO/azure-pipelines.yml" "$BEFORE_TRIGGER_COPY"
+
+run "$TRIGGERNONEHOME" ci-setup "$TRIGGERNONEREPO" --feed "SomeProject/SomeFeed"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "trigger: none" \
+  && ok "ci-setup refuses a pipeline with trigger: none instead of wiring in a publish step that would never run" \
+  || bad "ci-setup should have refused a trigger: none pipeline: $RUN_OUT"
+cmp -s "$TRIGGERNONEREPO/azure-pipelines.yml" "$BEFORE_TRIGGER_COPY" \
+  && ok "the trigger: none pipeline file is left completely untouched after the refusal" \
+  || bad "ci-setup modified a pipeline file it should have refused to touch"
+
+#############################################################################
+echo "--- scenario: ci-setup rejects an unsafe --pipeline-file instead of writing outside the repo (PBI 297919) ---"
+#############################################################################
+SAFETYREPO="$(new_tmp_dir)/safetyrepo"
+init_fixture_repo "$SAFETYREPO"
+echo x > "$SAFETYREPO/f.sh"
+( cd "$SAFETYREPO" && git add -A && git_q commit -m "initial" )
+SAFETYHOME="$(new_tmp_dir)"
+
+run "$SAFETYHOME" ci-setup "$SAFETYREPO" --feed "SomeProject/SomeFeed" --pipeline-file "../escape.yml"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "'\.\.' segments" \
+  && ok "ci-setup rejects a --pipeline-file containing '..' instead of writing outside the repo" \
+  || bad "ci-setup should have rejected a path-traversal --pipeline-file: $RUN_OUT"
+[ ! -f "$(dirname "$SAFETYREPO")/escape.yml" ] \
+  && ok "no file was written outside the repository" \
+  || bad "ci-setup wrote a file outside the repository despite the '..' in --pipeline-file"
+
+run "$SAFETYHOME" ci-setup "$SAFETYREPO" --feed "SomeProject/SomeFeed" --pipeline-file "/etc/evil.yml"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -qi "not absolute" \
+  && ok "ci-setup rejects an absolute --pipeline-file" \
+  || bad "ci-setup should have rejected an absolute --pipeline-file: $RUN_OUT"
+
 echo "----------------------------------------"
 echo "smoke test: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

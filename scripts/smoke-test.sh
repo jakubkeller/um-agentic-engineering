@@ -59,6 +59,16 @@ Fixture skill body for $label.
 EOF
 }
 
+# write_real_repository_context_skill <fixture_dir>: copies the actual
+# repository-context skill (not a dummy fixture) into a release source, so
+# 'init'/'update' scenarios below can exercise real install-hooks/refresh/
+# ci-setup behavior, not just that files landed in the right place.
+write_real_repository_context_skill() {
+  local dir="$1"
+  mkdir -p "$dir/toolkit/skills"
+  cp -R "$REPO_DIR/toolkit/skills/repository-context" "$dir/toolkit/skills/repository-context"
+}
+
 write_broken_skill() {
   # frontmatter name deliberately doesn't match the folder name
   local dir="$1" name="$2"
@@ -292,6 +302,99 @@ run "$BAD_INVOKER" "$HOME6" install
 [ -z "$(find "$HOME6" -mindepth 1 2>/dev/null)" ] \
   && ok "a failed install leaves no misleading artifacts behind" \
   || bad "a failed install still wrote files under $HOME6"
+
+#############################################################################
+echo "--- scenario: 'init' installs the toolkit and bootstraps the current repo's Git hooks, no CI prompt when not interactive ---"
+#############################################################################
+FIXTURE_INIT="$(new_tmp_dir)/fixture-init"
+init_fixture_repo "$FIXTURE_INIT"
+write_real_repository_context_skill "$FIXTURE_INIT"
+publish_release "$FIXTURE_INIT" 1.0.0
+INVOKER_INIT="$(build_invoker "$FIXTURE_INIT")"
+HOME_INIT="$(new_tmp_dir)"
+
+TARGETREPO="$(new_tmp_dir)/targetrepo"
+init_fixture_repo "$TARGETREPO"
+echo x > "$TARGETREPO/f.sh"
+( cd "$TARGETREPO" && git add -A && git_q commit -m "initial" )
+
+INIT_OUT="$( cd "$TARGETREPO" && AGENTIC_TOOLKIT_HOME="$HOME_INIT" "$INVOKER_INIT/agentic-eng" init </dev/null 2>&1 )"
+INIT_EXIT=$?
+[ "$INIT_EXIT" -eq 0 ] && ok "init exits 0 against a real target repo" || bad "init exited $INIT_EXIT: $INIT_OUT"
+[ -f "$HOME_INIT/.kiro/skills/repository-context/repo-context.sh" ] \
+  && ok "init also installs the toolkit itself (same as install)" \
+  || bad "init did not install the toolkit"
+[ -f "$TARGETREPO/.git/hooks/post-commit" ] && grep -qF "um-agentic-engineering repository-context refresh" "$TARGETREPO/.git/hooks/post-commit" \
+  && ok "init installs repository-context's Git hooks in the target repo" \
+  || bad "init did not install Git hooks in the target repo"
+HOOK_MARK_COUNT_BEFORE="$(grep -cF "um-agentic-engineering repository-context refresh" "$TARGETREPO/.git/hooks/post-commit")"
+[ ! -f "$TARGETREPO/azure-pipelines.yml" ] \
+  && ok "init does not wire up CI publishing when not interactive and no --ci-feed was given" \
+  || bad "init created azure-pipelines.yml despite no feed and no TTY"
+printf '%s' "$INIT_OUT" | grep -qi "Skipped repository-context CI publishing" \
+  && ok "init explains that CI publishing was skipped, and how to turn it on later" \
+  || bad "init did not explain the CI publishing skip: $INIT_OUT"
+
+INIT_OUT2="$( cd "$TARGETREPO" && AGENTIC_TOOLKIT_HOME="$HOME_INIT" "$INVOKER_INIT/agentic-eng" init </dev/null 2>&1 )"
+[ "$?" -eq 0 ] && ok "re-running init is idempotent and exits 0" || bad "re-running init failed: $INIT_OUT2"
+HOOK_MARK_COUNT_AFTER="$(grep -cF "um-agentic-engineering repository-context refresh" "$TARGETREPO/.git/hooks/post-commit")"
+[ "$HOOK_MARK_COUNT_AFTER" = "$HOOK_MARK_COUNT_BEFORE" ] \
+  && ok "re-running init does not duplicate the Git hooks block" \
+  || bad "re-running init changed the hook marker count ($HOOK_MARK_COUNT_BEFORE -> $HOOK_MARK_COUNT_AFTER), suggesting duplication"
+
+#############################################################################
+echo "--- scenario: 'init --ci-feed' wires up CI publishing, and 'update' refreshes it without asking again ---"
+#############################################################################
+CIFEEDREPO="$(new_tmp_dir)/cifeedrepo"
+init_fixture_repo "$CIFEEDREPO"
+echo x > "$CIFEEDREPO/f.sh"
+( cd "$CIFEEDREPO" && git add -A && git_q commit -m "initial" )
+HOME_CIFEED="$(new_tmp_dir)"
+
+INIT_CI_OUT="$( cd "$CIFEEDREPO" && AGENTIC_TOOLKIT_HOME="$HOME_CIFEED" "$INVOKER_INIT/agentic-eng" init --ci-feed "Nucleus/RepoContext" </dev/null 2>&1 )"
+[ "$?" -eq 0 ] && ok "init --ci-feed exits 0" || bad "init --ci-feed failed: $INIT_CI_OUT"
+[ -f "$CIFEEDREPO/azure-pipelines.yml" ] \
+  && ok "init --ci-feed wires up this repo's CI publishing in one call" \
+  || bad "init --ci-feed did not create azure-pipelines.yml"
+grep -q "Nucleus/RepoContext" "$CIFEEDREPO/azure-pipelines.yml" \
+  && ok "the wired-up pipeline references the feed given to init" \
+  || bad "the wired-up pipeline does not reference the given feed"
+[ -x "$CIFEEDREPO/.ci/repository-context/repo-context.sh" ] \
+  && ok "init --ci-feed also vendors the indexing script into the repo" \
+  || bad "init --ci-feed did not vendor the indexing script"
+
+# Commit it (an engineer would review and commit this, same as any other change).
+( cd "$CIFEEDREPO" && git add -A && git_q commit -m "wire up repository-context publish" )
+VENDORED_BEFORE="$(cat "$CIFEEDREPO/.ci/repository-context/repo-context.sh")"
+# Perturb the vendored copy to prove 'update' actually re-vendors it, rather than skipping because a file already exists.
+printf '\n# perturbed by test\n' >> "$CIFEEDREPO/.ci/repository-context/repo-context.sh"
+
+UPDATE_OUT="$( cd "$CIFEEDREPO" && AGENTIC_TOOLKIT_HOME="$HOME_CIFEED" "$INVOKER_INIT/agentic-eng" update </dev/null 2>&1 )"
+[ "$?" -eq 0 ] && ok "update exits 0 against a repo with CI publishing already configured" || bad "update failed: $UPDATE_OUT"
+printf '%s' "$UPDATE_OUT" | grep -qi "Refreshed repository-context CI publishing" \
+  && ok "update refreshes CI publishing without being asked for the feed again" \
+  || bad "update did not report refreshing CI publishing: $UPDATE_OUT"
+printf '%s' "$UPDATE_OUT" | grep -q "Nucleus/RepoContext" \
+  && ok "update recovered the original feed on its own (scraped from the pipeline file)" \
+  || bad "update did not recover and reuse the original feed: $UPDATE_OUT"
+[ "$(cat "$CIFEEDREPO/.ci/repository-context/repo-context.sh")" = "$VENDORED_BEFORE" ] \
+  && ok "update actually re-vendors the script (the test's perturbation was overwritten)" \
+  || bad "update did not re-vendor the script; the perturbation is still present"
+
+#############################################################################
+echo "--- scenario: 'update' never newly enables CI publishing an engineer hasn't opted into (PBI 297919 follow-up) ---"
+#############################################################################
+NOCFGREPO="$(new_tmp_dir)/nocfgrepo"
+init_fixture_repo "$NOCFGREPO"
+echo x > "$NOCFGREPO/f.sh"
+( cd "$NOCFGREPO" && git add -A && git_q commit -m "initial" )
+HOME_NOCFG="$(new_tmp_dir)"
+( cd "$NOCFGREPO" && AGENTIC_TOOLKIT_HOME="$HOME_NOCFG" "$INVOKER_INIT/agentic-eng" init </dev/null >/dev/null 2>&1 )
+
+( cd "$NOCFGREPO" && AGENTIC_TOOLKIT_HOME="$HOME_NOCFG" "$INVOKER_INIT/agentic-eng" update </dev/null >/dev/null 2>&1 )
+[ ! -f "$NOCFGREPO/azure-pipelines.yml" ] \
+  && ok "update never creates azure-pipelines.yml for a repo that never opted into CI publishing via init" \
+  || bad "update created azure-pipelines.yml despite the engineer never having opted in"
 
 echo "----------------------------------------"
 echo "smoke test: $PASS passed, $FAIL failed"
