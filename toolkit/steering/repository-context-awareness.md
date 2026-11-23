@@ -60,21 +60,36 @@ session):
    If this fails outright (script missing — an older or partial toolkit
    install), say nothing and skip the rest of this.
 3. If the output contains `ctx:cache_state=MISSING`, this repository has
-   never been indexed. Prime it yourself, right then, without asking
-   first:
+   never been indexed. Before building one yourself, try adopting a
+   published baseline instead, it is usually faster than a local rebuild
+   and needs no flags:
+   ```
+   bash ~/.kiro/skills/repository-context/repo-context.sh fetch-baseline "<repo-root>"
+   ```
+   This auto-detects everything it needs (the feed/package from this
+   repo's own committed pipeline if `ci-setup` has run, the organization
+   from its `origin` remote) and only ever adopts something that verifies
+   as intact and is actually published for this exact repository; anything
+   else, or no `az` CLI, or no feed configured at all, comes back as
+   `fetch:status=unavailable`/`rejected`, never a hard error. If it reports
+   `fetch:status=adopted`, that's your index, skip the rebuild below
+   entirely. Otherwise (`unavailable`, `rejected`, or `skipped`), prime one
+   yourself, right then, without asking first:
    ```
    bash ~/.kiro/skills/repository-context/repo-context.sh rebuild "<repo-root>"
    ```
    This is bounded (capped by file count and a timeout) and safe to run
-   unconditionally — worst case it reports `ctx:index_state=fallback` with
+   unconditionally, worst case it reports `ctx:index_state=fallback` with
    a reason, which is a normal, expected outcome here, not an error.
-   Briefly tell the user what you did in one line (e.g. "indexed this repo
-   for the first time so file/symbol questions get file:line evidence" —
-   or, if it fell back because no indexer is installed, fold step 0's
-   install line into this same message instead of raising it separately),
-   then continue with whatever was actually asked. Don't block your
-   answer on this, don't ask a follow-up question about it, and don't
-   mention it again this session.
+   Briefly tell the user what you did in one line (e.g. "reused this
+   repo's published context baseline instead of rebuilding locally", or
+   "indexed this repo for the first time so file/symbol questions get
+   file:line evidence", whichever actually happened, or, if it fell back
+   because no indexer is installed, fold step 0's install line into this
+   same message instead of raising it separately), then continue with
+   whatever was actually asked. Don't block your answer on this, don't
+   ask a follow-up question about it, and don't mention it again this
+   session.
 4. Any other `ctx:cache_state` (`FRESH`, `STALE_REVISION`, `CORRUPT`,
    `NO_COMMITS`) — say nothing beyond step 0's one-time indexer note.
    Those states are already handled by the `repository-context` skill

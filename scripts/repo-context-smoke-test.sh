@@ -984,6 +984,203 @@ run "$SAFETYHOME" ci-setup "$SAFETYREPO" --feed "SomeProject/SomeFeed" --pipelin
   && ok "ci-setup rejects an absolute --pipeline-file" \
   || bad "ci-setup should have rejected an absolute --pipeline-file: $RUN_OUT"
 
+#############################################################################
+echo "--- scenario: fetch-baseline adopts a verified, matching published artifact as the local cache (PBI 297918 AC1) ---"
+#############################################################################
+FETCHPUBREPO="$(new_tmp_dir)/fetch-pub-repo"
+init_fixture_repo "$FETCHPUBREPO"
+printf 'function helper_target() {\n  echo "hi"\n}\n' > "$FETCHPUBREPO/a.sh"
+( cd "$FETCHPUBREPO" && git remote add origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" && git add -A && git_q commit -m "initial" )
+FETCHPUBHOME="$(new_tmp_dir)"
+FETCH_SHA="$(cd "$FETCHPUBREPO" && git rev-parse HEAD)"
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FETCHPUBHOME" bash "$REPO_CTX" rebuild --force "$FETCHPUBREPO" >/dev/null 2>&1
+FETCHBUNDLE="$(new_tmp_dir)/fetch-baseline-bundle"
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FETCHPUBHOME" bash "$REPO_CTX" package "$FETCHPUBREPO" "$FETCHBUNDLE" >/dev/null 2>&1
+bash "$REPO_CTX" verify "$FETCHBUNDLE" >/dev/null 2>&1 \
+  && ok "fixture setup: the published artifact for fetch-baseline scenarios verifies ok before use" \
+  || bad "fixture setup failed: the fetch-baseline test artifact did not verify ok"
+
+# A clone is the realistic stand-in for "a teammate's checkout of the same
+# repo at the same commit" -- it's the only way to get a byte-identical
+# commit hash deterministically, rather than racing on commit timestamps.
+FETCHCLONE="$(new_tmp_dir)/fetch-clone"
+git clone -q "$FETCHPUBREPO" "$FETCHCLONE" 2>/dev/null
+( cd "$FETCHCLONE" && git remote set-url origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" )
+FETCHCLONEHOME="$(new_tmp_dir)"
+
+run "$FETCHCLONEHOME" fetch-baseline "$FETCHCLONE" --from "$FETCHBUNDLE"
+[ "$RUN_EXIT" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=adopted$' \
+  && ok "fetch-baseline adopts a verified artifact published for this exact repo and commit" \
+  || bad "fetch-baseline did not adopt a valid matching artifact: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q "^fetch:artifact_commit=${FETCH_SHA}$" \
+  && ok "the adopted baseline reports the exact commit it was published from" \
+  || bad "fetch-baseline reported the wrong artifact commit: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^fetch:relation_to_head=exact$' \
+  && ok "an adopted baseline at the same commit as HEAD is reported as an exact match, not just 'stale'" \
+  || bad "expected relation_to_head=exact: $RUN_OUT"
+
+run "$FETCHCLONEHOME" status "$FETCHCLONE"
+[ "$(ctx_field cache_state)" = "FRESH" ] \
+  && ok "after adopting a baseline at the current commit, status reports the cache as FRESH" \
+  || bad "status did not report FRESH after adopting a same-commit baseline: $RUN_OUT"
+printf '%s' "$RUN_OUT" | grep -q '^ctx:cache_source=published$' \
+  && ok "status reports the adopted cache's provenance as published, not local" \
+  || bad "status did not report cache_source=published after adoption: $RUN_OUT"
+
+RUN_OUT="$(PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FETCHCLONEHOME" bash "$REPO_CTX" lookup helper_target "$FETCHCLONE" 2>&1)"
+printf '%s' "$RUN_OUT" | grep -q 'source=index confidence=confirmed' \
+  && ok "a lookup against the adopted baseline returns a confirmed, index-backed result, not just an inferred grep hit" \
+  || bad "lookup did not return a confirmed result from the adopted baseline: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: an adopted baseline never hides local uncommitted changes (PBI 297918 AC3) ---"
+#############################################################################
+echo 'function helper_target_local() { echo "new"; }' >> "$FETCHCLONE/a.sh"
+RUN_OUT="$(PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FETCHCLONEHOME" bash "$REPO_CTX" lookup helper_target_local "$FETCHCLONE" 2>&1)"
+printf '%s' "$RUN_OUT" | grep -q 'kind=changed.*source=diff' \
+  && ok "an uncommitted addition is still surfaced via the diff overlay even though the cache came from a published baseline" \
+  || bad "an uncommitted change was not surfaced on top of an adopted baseline: $RUN_OUT"
+( cd "$FETCHCLONE" && git checkout -q -- a.sh )
+
+#############################################################################
+echo "--- scenario: fetch-baseline skips adoption when the local cache is already FRESH, rather than discarding a good index (PBI 297918) ---"
+#############################################################################
+FETCHCLONE2="$(new_tmp_dir)/fetch-clone-2"
+git clone -q "$FETCHPUBREPO" "$FETCHCLONE2" 2>/dev/null
+( cd "$FETCHCLONE2" && git remote set-url origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" )
+FETCHCLONE2HOME="$(new_tmp_dir)"
+PATH="$TOOLDIR:$PATH" AGENTIC_TOOLKIT_HOME="$FETCHCLONE2HOME" bash "$REPO_CTX" rebuild --force "$FETCHCLONE2" >/dev/null 2>&1
+
+run "$FETCHCLONE2HOME" fetch-baseline "$FETCHCLONE2" --from "$FETCHBUNDLE"
+[ "$RUN_EXIT" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=skipped$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=local-already-fresh$' \
+  && ok "fetch-baseline skips adoption when the local cache is already FRESH at HEAD" \
+  || bad "fetch-baseline should have skipped adoption over an already-FRESH local cache: $RUN_OUT"
+run "$FETCHCLONE2HOME" status "$FETCHCLONE2"
+printf '%s' "$RUN_OUT" | grep -q '^ctx:cache_source=local$' \
+  && ok "the untouched local cache still reports cache_source=local after the skipped fetch attempt" \
+  || bad "the local cache's provenance changed after a skipped fetch attempt: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: fetch-baseline rejects an artifact published for a different repository, and never touches the local cache (PBI 297918 AC2) ---"
+#############################################################################
+FETCHWRONGREPO="$(new_tmp_dir)/fetch-wrong-repo"
+init_fixture_repo "$FETCHWRONGREPO"
+echo x > "$FETCHWRONGREPO/f.sh"
+( cd "$FETCHWRONGREPO" && git remote add origin "https://dev.azure.com/fetchorg/fetchproj/_git/some-other-repo" && git add -A && git_q commit -m "initial" )
+FETCHWRONGHOME="$(new_tmp_dir)"
+
+run "$FETCHWRONGHOME" fetch-baseline "$FETCHWRONGREPO" --from "$FETCHBUNDLE"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=rejected$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=repo-mismatch$' \
+  && ok "fetch-baseline rejects an artifact published for a different repository instead of silently adopting it" \
+  || bad "fetch-baseline should have rejected a repo-mismatched artifact: $RUN_OUT"
+run "$FETCHWRONGHOME" status "$FETCHWRONGREPO"
+[ "$(ctx_field cache_state)" = "MISSING" ] \
+  && ok "the local cache stays untouched (still MISSING) after a rejected repo-mismatched artifact, leaving the normal fallback in place" \
+  || bad "the local cache was not left untouched after a repo-mismatch rejection: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: fetch-baseline rejects a corrupted artifact rather than trusting it, and never touches the local cache (PBI 297918 AC2) ---"
+#############################################################################
+FETCHCORRUPT="$(new_tmp_dir)/fetch-corrupt-bundle"
+cp -R "$FETCHBUNDLE" "$FETCHCORRUPT"
+echo "tampered" >> "$FETCHCORRUPT/symbols.idx"
+FETCHCORRUPTCONSUMER="$(new_tmp_dir)/fetch-corrupt-consumer"
+init_fixture_repo "$FETCHCORRUPTCONSUMER"
+echo x > "$FETCHCORRUPTCONSUMER/f.sh"
+( cd "$FETCHCORRUPTCONSUMER" && git remote add origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" && git add -A && git_q commit -m "initial" )
+FETCHCORRUPTHOME="$(new_tmp_dir)"
+
+run "$FETCHCORRUPTHOME" fetch-baseline "$FETCHCORRUPTCONSUMER" --from "$FETCHCORRUPT"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=rejected$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=checksum-mismatch$' \
+  && ok "fetch-baseline rejects a tampered artifact rather than trusting its manifest blindly" \
+  || bad "fetch-baseline should have rejected a tampered artifact: $RUN_OUT"
+run "$FETCHCORRUPTHOME" status "$FETCHCORRUPTCONSUMER"
+[ "$(ctx_field cache_state)" = "MISSING" ] \
+  && ok "the local cache stays untouched after a rejected corrupted artifact" \
+  || bad "the local cache was not left untouched after a corruption rejection: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: fetch-baseline rejects an artifact whose schema doesn't match this script, even though it's otherwise intact (PBI 297918 AC2) ---"
+#############################################################################
+FETCHOLDSCHEMA="$(new_tmp_dir)/fetch-old-schema-bundle"
+cp -R "$FETCHBUNDLE" "$FETCHOLDSCHEMA"
+grep -v '^artifact_schema_version: ' "$FETCHOLDSCHEMA/manifest.txt" > "$FETCHOLDSCHEMA/manifest.txt.new"
+{ echo 'artifact_schema_version: 999'; cat "$FETCHOLDSCHEMA/manifest.txt.new"; } > "$FETCHOLDSCHEMA/manifest.txt"
+rm -f "$FETCHOLDSCHEMA/manifest.txt.new"
+bash "$REPO_CTX" verify "$FETCHOLDSCHEMA" >/dev/null 2>&1
+[ $? -eq 0 ] \
+  && ok "fixture setup: the schema-bumped bundle still passes plain integrity verification (checksums are untouched)" \
+  || bad "fixture setup failed: the schema-bumped bundle should still verify as intact"
+
+FETCHSCHEMACONSUMER="$(new_tmp_dir)/fetch-schema-consumer"
+init_fixture_repo "$FETCHSCHEMACONSUMER"
+echo x > "$FETCHSCHEMACONSUMER/f.sh"
+( cd "$FETCHSCHEMACONSUMER" && git remote add origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" && git add -A && git_q commit -m "initial" )
+FETCHSCHEMAHOME="$(new_tmp_dir)"
+
+run "$FETCHSCHEMAHOME" fetch-baseline "$FETCHSCHEMACONSUMER" --from "$FETCHOLDSCHEMA"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=rejected$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=incompatible-schema$' \
+  && ok "fetch-baseline rejects an artifact with a mismatched schema version even when its checksums are intact" \
+  || bad "fetch-baseline should have rejected a schema-incompatible artifact: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: fetch-baseline reports an actionable reason instead of failing opaquely when nothing is retrievable (PBI 297918 AC2) ---"
+#############################################################################
+FETCHNOMANIFEST="$(new_tmp_dir)/fetch-empty-bundle"
+mkdir -p "$FETCHNOMANIFEST"
+run "$FETCHSCHEMAHOME" fetch-baseline "$FETCHSCHEMACONSUMER" --from "$FETCHNOMANIFEST"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=rejected$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=missing-manifest$' \
+  && ok "fetch-baseline rejects a directory with no manifest.txt instead of guessing" \
+  || bad "fetch-baseline should have reported missing-manifest: $RUN_OUT"
+
+FETCHNOFEEDREPO="$(new_tmp_dir)/fetch-no-feed-repo"
+init_fixture_repo "$FETCHNOFEEDREPO"
+echo x > "$FETCHNOFEEDREPO/f.sh"
+( cd "$FETCHNOFEEDREPO" && git remote add origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" && git add -A && git_q commit -m "initial" )
+FETCHNOFEEDHOME="$(new_tmp_dir)"
+run "$FETCHNOFEEDHOME" fetch-baseline "$FETCHNOFEEDREPO"
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=unavailable$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=no-feed-configured$' \
+  && ok "fetch-baseline with no --feed and no ci-setup configured reports unavailable rather than guessing a feed" \
+  || bad "fetch-baseline should have reported no-feed-configured: $RUN_OUT"
+
+#############################################################################
+echo "--- scenario: fetch-baseline auto-detects the feed, package, and org to use from this repo's own committed pipeline and remote, with zero flags (PBI 297918) ---"
+#############################################################################
+FETCHAUTOREPO="$(new_tmp_dir)/fetch-auto-repo"
+init_fixture_repo "$FETCHAUTOREPO"
+echo x > "$FETCHAUTOREPO/f.sh"
+( cd "$FETCHAUTOREPO" && git remote add origin "https://dev.azure.com/fetchorg/fetchproj/_git/fetchrepo" && git add -A && git_q commit -m "initial" )
+FETCHAUTOHOME="$(new_tmp_dir)"
+run "$FETCHAUTOHOME" ci-setup "$FETCHAUTOREPO" --feed "FetchProject/FetchFeed"
+[ "$RUN_EXIT" -eq 0 ] \
+  && ok "fixture setup: ci-setup configured a feed/package for the auto-detection scenario" \
+  || bad "fixture setup failed: ci-setup did not succeed for the auto-detection scenario: $RUN_OUT"
+
+# With the real `az` hidden from PATH, auto-detection succeeding all the
+# way through to the one genuinely external step (the az CLI call itself)
+# is what distinguishes "no feed configured" from "feed/org resolved, az
+# unavailable" -- reaching az-cli-missing instead of no-feed-configured or
+# no-organization-detected proves the feed, package, and org were all
+# derived automatically, with no flags and nobody telling the agent what
+# to fetch.
+MINIMALPATH="$(new_tmp_dir)"
+for b in bash git grep sed awk cp mv rm mkdir cat printf head tail wc shasum sha256sum basename dirname tr date mktemp; do
+  p="$(command -v "$b" 2>/dev/null)"
+  [ -n "$p" ] && ln -sf "$p" "$MINIMALPATH/$b" 2>/dev/null
+done
+RUN_OUT="$(PATH="$MINIMALPATH" AGENTIC_TOOLKIT_HOME="$FETCHAUTOHOME" bash "$REPO_CTX" fetch-baseline "$FETCHAUTOREPO" 2>&1)"
+RUN_EXIT=$?
+[ "$RUN_EXIT" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q '^fetch:status=unavailable$' \
+  && printf '%s' "$RUN_OUT" | grep -q '^fetch:reason=az-cli-missing$' \
+  && ok "with zero flags, fetch-baseline auto-detects the feed/package from the committed pipeline and the org from the origin remote, reaching the az CLI step itself" \
+  || bad "fetch-baseline did not auto-detect feed/package/org from the repo alone: $RUN_OUT"
+
 echo "----------------------------------------"
 echo "smoke test: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

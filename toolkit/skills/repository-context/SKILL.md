@@ -280,6 +280,62 @@ the exact same cache this skill already builds via `rebuild`/`refresh`.
    inside Azure DevOps itself (New Pipeline, use existing YAML file).
    That one click requires org access this toolkit doesn't have.
 
+## Reusing a published baseline locally (PBI 297918)
+
+The consume side of the same feature: instead of every engineer rebuilding
+their own index from scratch, reuse whatever their repository's own CI
+already published.
+
+```
+bash <that-dir>/repo-context.sh fetch-baseline "<repo-root>" [--feed "<Project/Feed>"] [--org "<url>"] [--package "<name>"] [--version "<ver>"] [--from "<dir>"] [--force]
+```
+
+With no flags at all, it auto-detects everything it needs straight from
+the repository itself: `--feed`/`--package` from whatever `ci-setup`
+already wired into the committed pipeline file, and `--org` from the
+`origin` remote (Azure DevOps Services, both the `dev.azure.com` and
+legacy `.visualstudio.com` forms, and a conventional on-prem Azure DevOps
+Server `/tfs/<collection>/` layout). If either can't be resolved, it
+reports `fetch:status=unavailable` with a specific reason rather than
+guessing, and nothing is attempted against the local cache. `--from
+<dir>` skips the network call entirely and adopts an already-retrieved
+bundle directly, this is the fully offline-testable path, and also the
+realistic one for any CI step that already downloaded the artifact into
+a working directory.
+
+Before adopting anything, it refuses to overwrite an already-`FRESH`
+local cache without `--force` (a local index at the exact current commit
+is already at least as good as any published baseline), then runs the
+same integrity check `verify` does, then checks that the artifact is
+actually for this repository (its `repo_origin_url` must match this
+repo's own `origin` remote, never adopted on a guess) and that its
+schema version matches what this script expects. Anything that fails
+any of those checks is rejected with a specific `fetch:reason`, and the
+local cache is left exactly as it was; the normal
+rebuild/direct-source fallback then applies on the next `lookup`,
+exactly as if `fetch-baseline` had never been called. Only a clean,
+verified, matching artifact is installed, as the exact same
+`metadata.txt`/`symbols.idx` pair `rebuild` itself would have produced,
+so every other command (`status`, `lookup`, `diff`, ...) picks it up
+completely unchanged, including `stale-by-revision` reporting once the
+repo moves past the baseline's commit. `status`/`lookup` also report
+`ctx:cache_source` (`local` or `published`) so it's always visible which
+one answered a query. Uncommitted local changes are never hidden either
+way: the diff overlay runs on every `lookup` regardless of where the
+cache came from.
+
+The one piece of this that the toolkit cannot verify without a live
+Azure DevOps connection is the actual `az artifacts universal download`
+call (same category as `UniversalPackages@0` on the publish side): if the
+`az` CLI isn't installed, isn't authenticated, or the call fails for any
+reason, that's reported as `fetch:status=unavailable` and treated
+exactly like "no baseline to offer," never a hard error.
+
+This also runs automatically, the first time an agent works in a
+repository per session, before falling back to a local rebuild (see
+`toolkit/steering/repository-context-awareness.md`); an engineer never
+has to know this command exists for the common case to work.
+
 ## Notes
 
 - This skill is installed globally (`~/.kiro/skills/repository-context/`)
