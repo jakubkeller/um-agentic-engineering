@@ -71,10 +71,10 @@ The two calls that matter:
                            Once per machine, once per repo. Installs the
                            toolkit, indexes this repo, and turns on
                            automatic Git-hook refresh. If --ci-feed is
-                           given (or you're at an interactive prompt and
-                           answer one when asked), also wires up this
-                           repo's Azure Pipeline to publish a versioned
-                           baseline after every merge. Safe to re-run.
+                           given, also wires up this repo's Azure Pipeline
+                           to publish a versioned baseline after every
+                           merge; otherwise that part is silently skipped,
+                           never asked for. Safe to re-run.
   agentic-eng update       Brings the toolkit and this repo's setup up to
                            date. Never asks anything new; only refreshes
                            whatever init already turned on.
@@ -475,9 +475,11 @@ scrape_ci_feed() {
 # mode=init: sets up Git-hook auto-refresh and builds the first index
 # unconditionally (both idempotent, safe to repeat). For CI publishing: if
 # already configured, just refreshes it (same as update); if not, and a
-# feed was given via <ci_feed_override> or an interactive prompt, turns it
-# on. Never turns on CI publishing silently, since that touches a tracked,
-# reviewed file and needs a feed name only the engineer has.
+# feed was given via <ci_feed_override>, turns it on. Never turns on CI
+# publishing on its own, since that touches a tracked, reviewed file and
+# needs a feed name only the engineer has; with no feed given, this is
+# silently skipped rather than asked for, so a bare 'agentic-eng init'
+# never surprises anyone with an unexplained question.
 #
 # mode=update: refreshes hooks/index the same way, but only ever refreshes
 # CI publishing if it was already configured, scraping the existing feed
@@ -517,11 +519,6 @@ do_repo_bootstrap() {
   [ "$skip_ci" = "1" ] && return 0
 
   local feed="$ci_feed_override"
-  if [ -z "$feed" ] && [ -t 0 ] && [ -t 1 ]; then
-    printf 'Azure Artifacts feed to publish this repo'"'"'s context baseline to (e.g. Project/Feed), or leave blank to skip: ' >&2
-    IFS= read -r feed || feed=""
-  fi
-
   if [ -z "$feed" ]; then
     info "Skipped repository-context CI publishing for $repo_root. Run 'agentic-eng init --ci-feed <Project/Feed>' later to turn it on."
     return 0

@@ -41,11 +41,16 @@ fact, not a per-repo one), the first time any of this applies:
    ```
    If this fails outright (script missing), say nothing and skip the rest
    of this entirely. If it reports `ctx:indexer_available=no`, remember
-   that for the rest of this session and surface it the first time you're
-   about to mention `repository-context` to the user at all (step 3 below,
-   or an actual lookup), by including the line it printed under
-   `ctx:fix=...` verbatim. Say it once, ever, this session — not once per
-   repository.
+   that for the rest of this session. The first time this session you are
+   about to answer anything grounded in this repo's code, whether that
+   means an explicit `lookup`/`relate` call, the first-time-per-repo
+   indexing in step 3, or a plain source read you fall back to because
+   the question didn't call for running the lookup command, include the
+   line printed under `ctx:fix=...` verbatim in that answer. This applies
+   even when you never end up saying the words `repository-context` or
+   naming the skill at all, that is not the trigger, answering a
+   code-grounded question while the indexer is unavailable is. Say it
+   once, ever, this session — not once per repository.
 
 The **first** time you're about to work in a git repository this session
 (not on every message, and not more than once per repository per
